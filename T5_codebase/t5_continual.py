@@ -9,7 +9,7 @@ import t5_dataset
 from itertools import cycle
 from copy import deepcopy
 from transformers import AdamW
-from transformers import T5Tokenizer, T5ForConditionalGeneration
+from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 
 
@@ -17,6 +17,7 @@ class ResMLP(torch.nn.Module):
     def __init__(self, 
                  bottleneck_size,
                  module_type='MLP1',
+                 layer_norm='False',
                  emb_dimension=512,
                  residual=True,
                  ):
@@ -73,8 +74,8 @@ class ResMLP(torch.nn.Module):
 
 class T5ContinualLearner:
     def __init__(self,
-                 model_name,
                  task_list,
+                 model_name='Salesforce/codet5-large',
                  batch_size=8,
                  select_k_per_class=-1,
                  prefix_len=0,
@@ -192,7 +193,7 @@ class T5ContinualLearner:
 
         self.model_name = model_name # e.g. "t5-large"
         self.model = T5ForConditionalGeneration.from_pretrained(model_name)
-        self.tokenizer = T5Tokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         # Freezing model weights for prompt tuning
         if freeze_weights:
             print('Freezing weights')
