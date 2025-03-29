@@ -91,7 +91,7 @@ if __name__ == "__main__":
         '--model_name',
         type=str,
         help='Name of the model used for training',
-        default="t5-base"
+        default="Salesforce/codet5-large"
     )
 
     parser.add_argument(

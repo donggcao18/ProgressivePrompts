@@ -191,7 +191,7 @@ class T5ContinualLearner:
         else:
             self.device = torch.device("cpu")
 
-        self.model_name = model_name # e.g. "t5-large"
+        self.model_name = model_name 
         self.model = T5ForConditionalGeneration.from_pretrained(model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         # Freezing model weights for prompt tuning
@@ -527,9 +527,6 @@ class T5ContinualLearner:
     def compute_exact_match(self, prediction, truth):
         return int(self.normalize_text(prediction) == self.normalize_text(truth))
 
-
-    # Compute F1 score used for some GLUE & SuperGLUE tasks
-    def compute_f1(self, prediction, truth):
         pred_tokens = self.normalize_text(prediction).split()
         truth_tokens = self.normalize_text(truth).split()
 

@@ -3,7 +3,6 @@ import numpy as np
 
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
-import datasets
 
 
 class T5Dataset:
@@ -15,99 +14,9 @@ class T5Dataset:
         """
         
         self.tokenizer = tokenizer
-        self.glue_datasets = ['cola', 'sst2', 'mrpc', 'qqp', 'stsb', 'mnli', \
-                              'mnli_mismatched', 'mnli_matched', 'qnli', 'rte', 'wnli', 'ax']
-        self.superglue_datasets = ['copa', 'boolq', 'wic', 'wsc', 'cb', 'record', 'multirc', 'rte_superglue', 'wsc_bool']
-        
-        # Column keys used in the dataset
-        self.task_to_keys = {
-            "cola": ("sentence", None),
-            "mnli": ("premise", "hypothesis"),
-            "mnli-mm": ("premise", "hypothesis"),
-            "mrpc": ("sentence1", "sentence2"),
-            #"qnli": ("question", "sentence"),
-            "qnli": ("text1", "text2"),
-            "qqp": ("question1", "question2"),
-            "rte": ("sentence1", "sentence2"),
-            "sst2": ("sentence", None),
-            "stsb": ("sentence1", "sentence2"),
-            "wnli": ("sentence1", "sentence2"),
-
-            "boolq": ("passage", "question"),
-            "copa": ('choice1', 'choice2', 'premise', 'question'),
-            "wic": ("start1", "end1", "sentence1", "start2", "end2", "sentence2", "word"),
-            "wsc": ("span1_text", "span1_index", "span2_text", "span2_index", "text"),
-            "wsc_bool": ("span1_text", "span1_index", "span2_text", "span2_index", "text"),
-            "cb": ("premise", "hypothesis"),
-            "record": ("passage", "query", "entities"),
-            "multirc": ("question", "answer", "paragraph"),
-            "rte_superglue": ("premise", "hypothesis"),
-
-            "scicite": ("sectionName", "string"),
-            "imdb": ("text", None),
-
-            "ag_news": ("text", None),
-            "yelp_review_full": ("text", None),
-            "yahoo_answers_topics": ("question_content", "best_answer"),
-            "dbpedia_14": ("title", "content"),
-
-            "ag": ("content", None),
-            "yelp": ("content", None),
-            "yahoo": ("content", None),
-            "dbpedia": ("content", None),
-            "amazon": ("content", None),
-        }
-        
-        # Label text for T5 tasks
-        # (T5 has text-to-text format for text and labels)
-        self.task_to_labels = {
-            "cola": ("not_acceptable", "acceptable"),
-            "mnli": ("entailment", "neutral", "contradiction"),
-            "mnli-mm": (),
-            "mrpc": ("not_equivalent", "equivalent"),
-            "qnli": ("entailment", "not_entailment"),
-            "qqp": ("not_duplicate", "duplicate"),
-            "rte": ("entailment", "not_entailment"),
-            "sst2": ("negative", "positive"),
-            "stsb": (),
-            "wnli": (),
-
-            "boolq": ("false", "true"),
-            "copa": ("false", "true"),
-            "wic": ("false", "true"),
-            "wsc_bool": ("false", "true"),
-            "cb": ("entailment", "contradiction", "neutral"),
-            "multirc": ("false", "true"),
-            "rte_superglue": ("entailment", "not_entailment"),
-
-            "scicite": (),
-            "imdb": ("negative", "positive"),
-
-            "ag_news": ("world", "sports", "business", "science"),
-            "yelp_review_full": ("terrible", "bad", "middle", "good", "wonderful"),
-            "yahoo_answers_topics": ("society and culture", "science", "health", "education and reference",
-                                     "computers and internet", "sports", "business", "entertainment and music",
-                                     "family and relationships", "politics and government"),
-            "dbpedia_14": ("company", "educationalinstitution", "artist", "athlete", "officeholder",
-                           "meanoftransportation", "building", "naturalplace", "village", "animal",
-                           "plant", "album", "film", "writtenwork"),
-
-            "ag": ("world", "sports", "business", "science"),
-            "yelp": ("terrible", "bad", "middle", "good", "wonderful"),
-            "yahoo": ("society and culture", "science", "health", "education and reference",
-                      "computers and internet", "sports", "business", "entertainment and music",
-                      "family and relationships", "politics and government"),
-            "dbpedia": ("company", "educationalinstitution", "artist", "athlete", "officeholder",
-                        "meanoftransportation", "building", "naturalplace", "village", "animal",
-                        "plant", "album", "film", "writtenwork"),
-            "amazon": ("terrible", "bad", "middle", "good", "wonderful"),
-        }
-
+        self.TaskCode_benchmark = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
         self.task = task
-        self.label_key = 'label'
-        if 'yahoo_' in task: self.label_key = 'topic'
-        if 'stsb' in task: self.label_key = 'similarity_score'
-        if task=='record': self.label_key = 'answers'
+        self.label_key = 'answer'
 
     
     # Helper function to save idx of multirc questions (needed later for test metric computation)
@@ -156,51 +65,36 @@ class T5Dataset:
 
     
     # Function to preprocess raw input & label text into tokenized dictionary
-    def preprocess_function(self, examples, task,
-                            max_length=512, max_length_target=2,
-                            prefix_list=[]):
+    def preprocess_function(self, 
+                            examples, 
+                            max_length=512):
         tokenizer = self.tokenizer
-        keys = self.task_to_keys[task]
-        label_key = self.label_key
 
-        if keys[1]!=None:
-            if task=='record':
-                text = 'passage : ' + str(examples['passage']) + ' query: ' + str(examples['query']) + ' entities: ' + ('; ').join((examples['entities']))
-            elif task=='wsc':
-                text, target = self.process_wsc(examples)
-            else:
-                text = ''
-                for key in keys:
-                    text += key + ': ' + str(examples[key]) + ' '
-        else:
-            text = examples[keys[0]]
+        text = examples['text']
+        text += ' </s>' 
+        source = tokenizer(text,
+                            padding="max_length",
+                            truncation=True,
+                            max_length=max_length,
+                            return_tensors="pt")
 
-        if len(prefix_list)>0:
-            text = (' ').join(prefix_list) + ' ' + text
-        source = tokenizer(text.strip()+' </s>',
-                          truncation=True,
-                          #padding=False,
-                          padding='max_length',
-                          max_length=max_length)
+        target_text = examples['target']
+        target_text += ' </s>'  
+        target = tokenizer(target_text,
+                            padding="max_length",
+                            truncation=True,
+                            max_length=max_length,
+                            return_tensors="pt")
 
-        if task=='stsb':
-            target = str(examples[label_key])[:3]
-        elif task=='record':
-            target = '; '.join(examples[label_key])
-        elif task=='wsc':
-            pass # already obtained target
-        else:
-            target = self.task_to_labels[task][examples[label_key]]
-        target += ' </s>'
-        target = tokenizer(
-                  target, max_length=max_length_target, pad_to_max_length=True, #return_tensors="pt"
-                )
+        dict_final = {
+            "source_ids": source["input_ids"].squeeze(0),
+            "source_mask": source["attention_mask"].squeeze(0),
+            "target_ids": target["input_ids"].squeeze(0),
+            "target_mask": target["attention_mask"].squeeze(0),
+        }
 
-        dict_final = {"source_ids": source['input_ids'],
-                      "source_mask": source['attention_mask'],
-                      "target_ids": target['input_ids'],
-                      "target_mask": target['attention_mask']}
         return dict_final
+
 
 
     
@@ -211,7 +105,6 @@ class T5Dataset:
                      k=-1,
                      seed=0,
                      return_test=False,
-                     target_len=2,
                      max_length=512,
                      prefix_list=[]):
         """Function that returns final T5 dataloader.
@@ -232,36 +125,16 @@ class T5Dataset:
         Returns:
             Dataloader: Torch Dataloader with preprocessed input text & label.
         """
-        
-        if task in ['amazon']: # amazon not available with hugging face
-            df = pd.read_csv('../datasets/src/data/'+task+'/'+split+'.csv', header=None)
-            df = df.rename(columns={0: "label", 1: "title", 2: "content"})
-            df['label'] = df['label'] - 1
-            dataset = datasets.Dataset.from_pandas(df)
-        elif task == 'mnli':
-            dataset = load_dataset('LysandreJik/glue-mnli-train', split=split)
-        elif task == 'qnli':
-            dataset = load_dataset('SetFit/qnli', split=split)
-        elif task == 'stsb':
-            dataset = load_dataset('stsb_multi_mt', name='en', split=split if split=='train' else 'dev')
-        else:
-            if task not in self.glue_datasets and task not in self.superglue_datasets:
-                dataset = load_dataset(task, split=split)
-            else:
-                benchmark = 'glue' if task not in self.superglue_datasets else 'super_glue'
-                dataset = load_dataset(benchmark,
-                                       task.replace('_superglue', '').replace('_bool', ''),
-                                       split=split)
 
-        # For yahoo dataset we need to filter out empty rows 
-        # (i.e. where "question" field is empty)
-        if self.task == "yahoo_answers_topics":
-            if split=='train':
-                good_id = np.load('good_id_yahoo_train.npy')
-                dataset = dataset.select(good_id)
-            elif split=='test':
-                good_id = np.load('good_id_yahoo_test.npy')
-                dataset = dataset.select(good_id)
+        if task == 'CONCODE':
+            dataset = load_dataset('AhmedSSoliman/CodeXGLUE-CONCODE', split=split)
+        elif task == 'CodeTrans':
+            dataset = load_dataset('CM/codexglue_codetrans', split=split)
+        elif task == 'CodeSearchNet':
+            dataset = load_dataset('irds/codesearchnet', split=split)
+        elif task == 'BFP':
+            dataset = load_dataset('shaznin/task4_dataset_bfp', split=split)
+
         
         # Using Lester et al. setting for WSC task, e.g.
         # using only positive samples (for output generation)
@@ -285,9 +158,8 @@ class T5Dataset:
         if return_test==False:
             encoded_dataset = dataset.map(lambda x: self.preprocess_function(x, task,
                                                                             max_length=max_length,
-                                                                            max_length_target=target_len,
                                                                             prefix_list=prefix_list),
-                                          batched=False)
+                                                                            batched=False)
             encoded_dataset.set_format(type='torch', columns=['source_ids', 'source_mask',
                                                               'target_ids', 'target_mask'])
             dataloader = DataLoader(encoded_dataset, batch_size=batch_size)
