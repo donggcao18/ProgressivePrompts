@@ -145,37 +145,7 @@ class T5ContinualLearner:
         """
         
         
-        self.glue_datasets = ['cola', 'sst2', 'mrpc', 'qqp', 'stsb', 'mnli', \
-                              'mnli_mismatched', 'mnli_matched', 'qnli', 'rte', 'wnli', 'ax']
-        self.superglue_datasets = ['copa', 'boolq', 'wic', 'wsc', 'wsc_bool', 'cb', 'record', 'multirc', 'rte_superglue']
-        self.task_to_target_len = {
-            'rte': 5,
-            'mrpc': 5,
-            'sst2': 2,
-            'qqp': 5,
-            'cola': 5,
-            'qnli': 5,
-            'mnli': 5,
-            'stsb': 3,
-
-            'wic': 2,
-            'boolq': 2,
-            'copa': 2,
-            'wsc': 3,
-            'wsc_bool': 2,
-            'cb': 5,
-            'multirc': 5,
-            'record': 10,
-            'rte_superglue': 5,
-
-            'imdb': 2,
-
-            'ag_news': 2,
-            'yahoo_answers_topics': 5,
-            'dbpedia_14': 5,
-            'amazon': 2,
-            'yelp_review_full': 2,
-        }
+        self.TaskCode_benchmark = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP'] 
         self.task_list = task_list
 
         self.freeze_weights = freeze_weights
@@ -366,7 +336,6 @@ class T5ContinualLearner:
             data_params = {'task': task,
                            'batch_size': self.batch_size,
                            'max_length': self.seq_len,
-                           'target_len': self.task_to_target_len[task],
                            'prefix_list': [], # we are using vector prefix (instead of tokenization)
                            }
             ds2 = t5_dataset.T5Dataset(self.tokenizer, task)
@@ -396,10 +365,6 @@ class T5ContinualLearner:
                 tasks_data_dict[task]['test'] = dataloader_test
             else:
                 tasks_data_dict[task]['val'] = dataloaders
-
-            if task == 'multirc' and k_val==-1:
-                self.multirc_idx = ds2.multirc_idx # saving multirc idx for later computation
-            else: self.multirc_idx = None
         return tasks_data_dict
 
 
@@ -527,36 +492,16 @@ class T5ContinualLearner:
     def compute_exact_match(self, prediction, truth):
         return int(self.normalize_text(prediction) == self.normalize_text(truth))
 
-        pred_tokens = self.normalize_text(prediction).split()
-        truth_tokens = self.normalize_text(truth).split()
-
-        # if either the prediction or the truth is no-answer then f1 = 1 if they agree, 0 otherwise
-        if len(pred_tokens) == 0 or len(truth_tokens) == 0:
-            return int(pred_tokens == truth_tokens)
-
-        common_tokens = set(pred_tokens) & set(truth_tokens)
-
-        # if there are no common tokens then f1 = 0
-        if len(common_tokens) == 0:
-            return 0
-
-        prec = len(common_tokens) / len(pred_tokens)
-        rec = len(common_tokens) / len(truth_tokens)
-
-        return 2 * (prec * rec) / (prec + rec)
-
 
     # Compute task metrics on a validation (test) set
     def validate(self,
                  dataloader_val,
                  task,
                  prompt=None,
-                 target_len=2,
                  print_outputs=False
                 ):
         model = self.model
         prefix_len = self.prefix_len
-        max_length = target_len
         tokenizer = self.tokenizer
         model.eval()
 
@@ -592,9 +537,7 @@ class T5ContinualLearner:
             outs = model.generate(
                 input_ids=batch["source_ids"],
                 attention_mask=source_mask_updated,
-                encoder_outputs=encoder_outputs,
-                max_length=max_length,
-            )
+                encoder_outputs=encoder_outputs)
             dec = [tokenizer.decode(ids) for ids in outs]
             texts = [tokenizer.decode(ids) for ids in batch['source_ids']]
             targets = [tokenizer.decode(ids) for ids in batch['target_ids']]
@@ -736,7 +679,6 @@ class T5ContinualLearner:
             self.optimizer = self.get_optimizer(self.lr, self.weight_decay,
                                                 task=task)
         model.to(self.device)
-        target_len = self.task_to_target_len[task]
         dataloader_train = self.tasks_data_dict[task]['train']
         dataloader_val = self.tasks_data_dict[task]['val']
 
@@ -791,7 +733,7 @@ class T5ContinualLearner:
                     for eval_task in self.task_list:
                         acc = self.validate(self.tasks_data_dict[eval_task]['val'],
                                             eval_task,
-                                            prompt=prompt, target_len=self.task_to_target_len[eval_task],
+                                            prompt=prompt, 
                                             print_outputs=False)
                         overall_acc.append(np.mean(acc))
                         if eval_task==task: # record val accuracy for the current task
@@ -799,7 +741,7 @@ class T5ContinualLearner:
                     acc = np.mean(overall_acc)
                 else:
                     acc = self.validate(dataloader_val, task,
-                                        prompt=prompt, target_len=target_len, print_outputs=True)
+                                        prompt=prompt, print_outputs=True)
                     if task in ['record', 'cb'] or (task=='multirc' and self.multirc_idx!=None):
                         acc = np.mean(acc) # averaging 2 scores
                     val_acc.append(acc)
@@ -861,7 +803,6 @@ class T5ContinualLearner:
                         acc = self.validate(self.tasks_data_dict[test_task]['test'],
                                             test_task,
                                             curr_prompt,
-                                            self.task_to_target_len[test_task],
                                             print_outputs=True)
                         results_dict['test'][num][test_task] = acc
 
@@ -869,7 +810,6 @@ class T5ContinualLearner:
                     acc = self.validate(self.tasks_data_dict[task]['test'],
                                         task,
                                         curr_prompt,
-                                        self.task_to_target_len[task],
                                         print_outputs=True)
                     results_dict['test'][task] = acc
             # saving results dict after each task
@@ -934,7 +874,6 @@ class T5ContinualLearner:
                 acc = self.validate(self.tasks_data_dict[test_task]['test'],
                                     test_task,
                                     curr_prompt,
-                                    self.task_to_target_len[test_task],
                                     print_outputs=True)
                 results_dict['test'][epoch][test_task] = acc
 

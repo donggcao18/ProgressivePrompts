@@ -133,7 +133,8 @@ class T5Dataset:
                                                                             task,
                                                                             max_length=max_length,
                                                                             prefix_list=prefix_list),
-                                                                            batched=False)
+                                                                            #batched=False
+                                                                            )
             encoded_dataset.set_format(type='torch', columns=['source_ids', 'source_mask',
                                                               'target_ids', 'target_mask'])
             dataloader = DataLoader(encoded_dataset, batch_size=batch_size)
