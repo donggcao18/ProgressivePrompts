@@ -327,44 +327,52 @@ class T5ContinualLearner:
 
             
     # Create Dictionary of task_name -> dataloader (for CL experiments)
+    """
+    Create a dictionary mapping task name → dataloaders for code generation tasks.
+    """
     def get_tasks_data_dict(self, memory_perc=0):
         tasks_data_dict = {}
 
         for task in self.task_list:
+            print(f"\nLoading data for task: {task}")
             tasks_data_dict[task] = {}
-            print(task)
-            data_params = {'task': task,
-                           'batch_size': self.batch_size,
-                           'max_length': self.seq_len,
-                           'prefix_list': [], # we are using vector prefix (instead of tokenization)
-                           }
-            ds2 = t5_dataset.T5Dataset(self.tokenizer, task)
-            if task not in ['mrpc', 'cola', 'copa', 'rte', 'rte_superglue', 'cb', 'wsc', 'wsc_bool']:
-                k = self.select_k_per_class
-                k_val = max(500, int(0.2*k)) if task!='sst2' else 400
-            else:
-                k = self.select_k_per_class if (self.select_k_per_class<=500 and task not in ['cb', 'copa', 'wsc', 'wsc_bool']) else -1
-                k_val = -1
-            if self.get_test_subset==False: k_val = -1 # use all val set
-            dataloader_train = ds2.get_final_ds(**data_params, k=k, split='train')
-            print('k = ', k, '  k-val = ',k_val)
-            val_split = 'validation' if (task in self.glue_datasets) or (task in self.superglue_datasets) else 'test'
-            dataloaders = ds2.get_final_ds(**data_params, k=k_val,
-                                           split=val_split, return_test=self.get_test_subset)
 
+            data_params = {
+                'task': task,
+                'batch_size': self.batch_size,
+                'max_length': self.seq_len,
+                'prefix_list': []  # using vector prompts, not textual
+            }
+
+            ds2 = t5_dataset.T5Dataset(self.tokenizer, task)
+
+            k = -1
+            k_val = -1 if not self.get_test_subset else 500  # or any fixed small val set
+
+            # Load train dataloader
+            dataloader_train = ds2.get_final_ds(**data_params, 
+                                                k=k, 
+                                                split='train')
             tasks_data_dict[task]['train'] = dataloader_train
 
-            if memory_perc>0:
-                k_mem = max(1, int(len(dataloader_train) * self.batch_size * memory_perc) )
+            # Optionally create a memory buffer for replay
+            if memory_perc > 0:
+                k_mem = max(1, int(len(dataloader_train) * self.batch_size * memory_perc))
                 dataloader_mem = ds2.get_final_ds(**data_params, k=k_mem, split='train')
                 tasks_data_dict[task]['train_mem'] = dataloader_mem
 
+            # Load val/test sets
             if self.get_test_subset:
-                dataloader_val, dataloader_test = dataloaders[0], dataloaders[1]
+                dataloader_val, dataloader_test = ds2.get_final_ds(**data_params, 
+                                                                   k=k_val, 
+                                                                   split='test', 
+                                                                   return_test=True)
                 tasks_data_dict[task]['val'] = dataloader_val
                 tasks_data_dict[task]['test'] = dataloader_test
             else:
-                tasks_data_dict[task]['val'] = dataloaders
+                dataloader_val = ds2.get_final_ds(**data_params, k=k_val, split='test')
+                tasks_data_dict[task]['val'] = dataloader_val
+
         return tasks_data_dict
 
 
@@ -428,7 +436,7 @@ class T5ContinualLearner:
 
 
 
-    # Perform one train step for full model training
+    # Full finetuning   
     def train_step(self, batch):
         model = self.model
         tokenizer = self.tokenizer
@@ -542,49 +550,7 @@ class T5ContinualLearner:
             texts = [tokenizer.decode(ids) for ids in batch['source_ids']]
             targets = [tokenizer.decode(ids) for ids in batch['target_ids']]
 
-            if task in ['stsb', 'cola', 'cb', 'multirc']:
-                row_true = [self.normalize_text(x) for x in targets]
-                row_pred = [self.normalize_text(x) for x in dec]
-                if task=='stsb':
-                    row_true = [float(x) if any(c.isalpha() for c in x)==False else 0.0 for x in row_true] # convert digits to float, convert letters to 0
-                    row_pred = [float(x) if any(c.isalpha() for c in x)==False else 0.0 for x in row_pred]
-                y_true += row_true
-                y_pred += row_pred
-
-            elif task=='record':
-                # multiple answers
-                for x,y in zip(dec, targets):
-                    corr += max([self.compute_exact_match(x, yi) for yi in y.split(';')])
-                    f1 += max([self.compute_f1(x, yi) for yi in y.split(';')])
-                total += batch['source_ids'].shape[0]
-
-            else:
-                corr += np.sum([self.normalize_text(x)==self.normalize_text(y) for x,y in zip(dec, targets)])
-                total += batch['source_ids'].shape[0]
-
             
-        if task=='cola':
-            return matthews_corrcoef(y_true, y_pred)
-
-        elif task=='stsb':
-            return np.corrcoef(y_true, y_pred)[0,1]
-
-        elif task=='cb':
-            return np.mean(np.array(y_true) == np.array(y_pred)), f1_score(y_true, y_pred, average='macro')
-
-        elif task=='multirc':
-            if self.multirc_idx!=None:
-                em = []
-                for idx in set(self.multirc_idx):
-                    k = np.where(self.multirc_idx==idx)[0]
-                    score = (np.array(y_true)[k] == np.array(y_pred)[k]).all()
-                    em.append(score)
-                return np.mean(em), f1_score(y_true, y_pred, average='micro')
-            else:
-                return f1_score(y_true, y_pred, average='micro')
-
-        elif task=='record':
-            return corr/total, f1/total
         return corr/total
 
 
@@ -849,8 +815,12 @@ class T5ContinualLearner:
                     batch = {k: v.to(device) for k, v in batch_combined[task_num].items()}
                     #loss = self.trainer.pass_batch(batch, list(tasks_data_dict)[task_num], self.device, cls_idx=cls_idx, only_output_loss=True)
                     if self.prefix_len>0: # prompt tuning
+                        """
+                        change: task=task if self.prefix_MLPs!=None else None 
+                        task=None
+                        """
                         loss = self.train_step_lester(batch,
-                                                      task=task if self.prefix_MLPs!=None else None,
+                                                      task=None,
                                                       progressive=progressive)
                     else:
                         loss = self.train_step(batch)
