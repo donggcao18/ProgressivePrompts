@@ -21,12 +21,12 @@ class T5Dataset:
         self.task = task
         self.text_key = {'CONCODE': 'nl',
                            'CodeTrans': 'java',
-                           'CodeSearchNet': 'en',   
-                           'BFP': 'input'}
+                           'CodeSearchNet': 'code',   
+                           'BFP': 'buggy'}
         self.label_key = {'CONCODE': 'code',
                             'CodeTrans': 'cs',
-                            'CodeSearchNet': 'java',
-                            'BFP': 'output'}
+                            'CodeSearchNet': 'docstring',
+                            'BFP': 'fixed'}
         self.task_instructions ={ 'CONCODE': 'Generate Java code from the following English description:\n',
                                 'CodeTrans': 'Translate the following Java code into C#:\n',
                                 'CodeSearchNet': 'Summarize the following Ruby code into English:\n',
@@ -57,7 +57,7 @@ class T5Dataset:
             raise ValueError(f"Unknown task name: {task}")
         
         instruction = self.task_instructions[task]
-        text = examples[text_key]
+        text = examples[text_key[task]]
         text = instruction + \
                text + ' </s>' 
         
@@ -67,7 +67,7 @@ class T5Dataset:
                             max_length=max_length,
                             return_tensors="pt")
 
-        target_text = examples[label_key]
+        target_text = examples[label_key[task]]
         target_text += ' </s>'  
         target = tokenizer(target_text,
                             padding="max_length",
