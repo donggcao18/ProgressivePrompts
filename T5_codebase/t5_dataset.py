@@ -116,9 +116,9 @@ class T5Dataset:
         elif task == 'CodeTrans':
             dataset = load_dataset('CM/codexglue_codetrans', split=split)
         elif task == 'CodeSearchNet':
-            dataset = load_dataset('irds/codesearchnet', split=split)
+            dataset = load_dataset('semeru/code-text-ruby', split=split)
         elif task == 'BFP':
-            dataset = load_dataset('shaznin/task4_dataset_bfp', split=split)
+            dataset = load_dataset('ayeshgk/code_x_glue_cc_code_refinement_annotated', split=split)
 
         
         # Selecting k subset of the samples (if requested)
