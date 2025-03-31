@@ -414,12 +414,12 @@ if __name__ == "__main__":
     )
 
 
-    # parser.add_argument(
-    #     '--optimizer',
-    #     type=str,
-    #     help='Which optimizer to use? (AdamW, LAMB etc.)',
-    #     default='AdamW'
-    # )
+    parser.add_argument(
+         '--optimizer',
+         type=str,
+         help='Which optimizer to use? (AdamW, LAMB etc.)',
+         default='AdamW'
+     )
 
     parser.add_argument(
         '--select_k_per_class',
@@ -463,12 +463,12 @@ if __name__ == "__main__":
         default=0
     )
 
-    # parser.add_argument(
-    #     '--freeze_except',
-    #     type=str,
-    #     help='If freeze_weights==1, freeze all weights except those that contain this keyword',
-    #     default='shared' # shared stands for wte
-    # )
+    parser.add_argument(
+         '--freeze_except',
+         type=str,
+         help='If freeze_weights==1, freeze all weights except those that contain this keyword',
+         default='shared' # shared stands for wte
+     )
 
 
 
@@ -516,12 +516,12 @@ if __name__ == "__main__":
     )
 
 
-    # parser.add_argument(
-    #     '--mlp_layer_norm',
-    #     type=int,
-    #     help='Whether to use MLP layer norm (1 - use, 0 - not use)',
-    #     default=0
-    # )
+    parser.add_argument(
+         '--mlp_layer_norm',
+         type=int,
+         help='Whether to use MLP layer norm (1 - use, 0 - not use)',
+         default=0
+     )
 
 
     main(parser.parse_args())

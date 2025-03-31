@@ -70,28 +70,30 @@ if __name__ == "__main__":
         '--save_dir',
         type=str,
         help='base directory of all models / features (should not be changed)',
-        default='/data/home/arazdai/T5_prompts/T5_continual/' #'/scratch/hdd001/home/anastasia/CL/'
+        default=r'data\t5_continual' 
     )
 
     parser.add_argument(
         '--save_name',
         type=str,
         help='folder name to save',
-        required=True
+        default='model.pth'
     )
 
     parser.add_argument(
-        '--task_list',
-        nargs='+',
-        help='List of tasks for training',
-        required=True
+    '--task_list',
+    type=str,
+    nargs='+',  # This means one or more arguments
+    help='List of tasks for training',
+    #required=True,
+    default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
     )
 
     parser.add_argument(
         '--model_name',
         type=str,
         help='Name of the model used for training',
-        default="Salesforce/codet5-large"
+        default='Salesforce/codet5-large'
     )
 
     parser.add_argument(
@@ -112,7 +114,7 @@ if __name__ == "__main__":
         '--batch_size',
         type=int,
         help='Batch size',
-        default=8
+        default=16
     )
 
     parser.add_argument(
@@ -149,7 +151,7 @@ if __name__ == "__main__":
         '--memory_perc',
         type=float,
         help='Memory perc',
-        default=0.01
+        default=0.0
     )
 
     parser.add_argument(

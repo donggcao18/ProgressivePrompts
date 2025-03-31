@@ -17,7 +17,7 @@ class T5Dataset:
         """
         
         self.tokenizer = tokenizer
-        self.TaskCode_benchmark = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
+        self.task_list = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
         self.task = task
         self.text_key = {'CONCODE': 'nl',
                            'CodeTrans': 'java',
@@ -53,7 +53,7 @@ class T5Dataset:
         label_key = self.label_key[task]
 
 
-        if task not in self.TaskCode_benchmark:
+        if task not in self.task_list:
             raise ValueError(f"Unknown task name: {task}")
         
         instruction = self.task_instructions[task]
