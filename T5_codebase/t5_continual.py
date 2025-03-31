@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import pandas as pd
 import numpy as np
+import collections
+import math
 from tqdm.auto import tqdm
 import logging, os, argparse
 
@@ -501,57 +503,191 @@ class T5ContinualLearner:
         return int(self.normalize_text(prediction) == self.normalize_text(truth))
 
 
-    # Compute task metrics on a validation (test) set
+    def _get_ngrams(self, 
+                    segment, 
+                    max_order):
+        """Extracts all n-grams up to a given max_order from a token list."""
+        ngram_counts = collections.Counter()
+        for order in range(1, max_order + 1):
+            for i in range(0, len(segment) - order + 1):
+                ngram = tuple(segment[i:i+order])
+                ngram_counts[ngram] += 1
+        return ngram_counts
+
+    def compute_bleu(self, 
+                     reference_corpus, 
+                     translation_corpus, 
+                     max_order=4, 
+                     smooth=False):
+        """
+        Computes BLEU score of translated segments against one or more references.
+
+        reference_corpus: list of lists of references for each translation.
+                        Each reference should be a tokenized list.
+        translation_corpus: list of tokenized translations to score.
+        """
+        matches_by_order = [0] * max_order
+        possible_matches_by_order = [0] * max_order
+        reference_length = 0
+        translation_length = 0
+
+        for (references, translation) in zip(reference_corpus, translation_corpus):
+            # references is a list of token lists; translation is a single token list
+            reference_length += min(len(r) for r in references)
+            translation_length += len(translation)
+
+            merged_ref_ngram_counts = collections.Counter()
+            for reference in references:
+                merged_ref_ngram_counts |= self._get_ngrams(reference, 
+                                                           max_order)
+
+            translation_ngram_counts = self._get_ngrams(translation, 
+                                                       max_order)
+            overlap = translation_ngram_counts & merged_ref_ngram_counts
+
+            for ngram in overlap:
+                matches_by_order[len(ngram)-1] += overlap[ngram]
+
+            for order in range(1, max_order+1):
+                possible_matches = len(translation) - order + 1
+                if possible_matches > 0:
+                    possible_matches_by_order[order-1] += possible_matches
+
+        precisions = [0] * max_order
+        for i in range(0, max_order):
+            if smooth:
+                precisions[i] = ((matches_by_order[i] + 1.) /
+                                (possible_matches_by_order[i] + 1.))
+            else:
+                if possible_matches_by_order[i] > 0:
+                    precisions[i] = (float(matches_by_order[i]) /
+                                    possible_matches_by_order[i])
+                else:
+                    precisions[i] = 0.0
+
+        if min(precisions) > 0:
+            p_log_sum = sum((1. / max_order) * math.log(p) for p in precisions)
+            geo_mean = math.exp(p_log_sum)
+        else:
+            geo_mean = 0
+
+        ratio = float(translation_length) / reference_length
+        if ratio > 1.0:
+            bp = 1.0
+        else:
+            bp = math.exp(1 - 1. / ratio)
+
+        bleu = geo_mean * bp
+        return bleu  # typically a float in [0..1]
+
+
     def validate(self,
-                 dataloader_val,
-                 task,
-                 prompt=None,
-                 print_outputs=False
-                ):
+                dataloader_val,
+                task=None,
+                prompt=None,
+                print_outputs=False):
+        """
+        Example validate function that calculates BLEU for T5 code generation.
+
+        self: assumed to have attributes like `self.model`, `self.tokenizer`, etc.
+        """
         model = self.model
-        prefix_len = self.prefix_len
         tokenizer = self.tokenizer
         model.eval()
 
-        corr, total, f1 = 0, 0, 0
-        y_true, y_pred = [], []
+        # We'll accumulate references & predictions across the whole dataset
+        reference_corpus = []   # shape: [ [ [ref_tokens], [ref_tokens2], ... ], ... ]
+        translation_corpus = [] # shape: [ [pred_tokens], [pred_tokens], ... ]
 
         for i, batch in enumerate(tqdm(dataloader_val)):
-            batch = {k:batch[k].to(self.device) for k in batch}
+            # Move tensors to device
+            batch = {k: batch[k].to(self.device) for k in batch}
+
+            # Prepare T5 input embeddings
             inputs_embeds = model.encoder.embed_tokens(batch["source_ids"]).to(self.device)
 
-            if prompt!=None:
-                k = inputs_embeds.shape[0]
-                inputs_embeds = torch.concat([prompt.repeat(k, 1, 1),
-                                              inputs_embeds], axis=1)[:,:self.seq_len]
-
-                full_prefix_len = prompt.shape[0] # prompt is inputted by user
-                source_mask_updated = torch.concat( (batch["source_mask"][0][0].repeat(k,full_prefix_len),
-                                                     batch["source_mask"]), axis=1)[:,:self.seq_len]
-
-            else: # full model fine tuning, no prompt added
+            if prompt is not None:
+                # Prepend prompt embeddings, if using progressive or prefix
+                batch_size = inputs_embeds.shape[0]
+                inputs_embeds = torch.concat([prompt.repeat(batch_size, 1, 1),
+                                            inputs_embeds],
+                                            dim=1)[:, :self.seq_len]
+                full_prefix_len = prompt.shape[0]
+                # Update the source mask
+                source_mask_updated = torch.concat(
+                    (
+                        batch["source_mask"][0][0].repeat(batch_size, full_prefix_len),
+                        batch["source_mask"]
+                    ),
+                    dim=1
+                )[:, :self.seq_len]
+            else:
+                # No prompt
                 source_mask_updated = batch["source_mask"]
 
-
+            # Encode
             encoder_outputs = model.encoder(
-                                    attention_mask=source_mask_updated,
-                                    inputs_embeds=inputs_embeds,
-                                    head_mask=None,  
-                                    output_attentions=None, 
-                                    output_hidden_states=None,  
-                                    return_dict=None, 
-                                )
+                attention_mask=source_mask_updated,
+                inputs_embeds=inputs_embeds,
+                head_mask=None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+            )
 
+            # Generate predictions
+            # (you can tweak max_length, num_beams, etc. below)
             outs = model.generate(
                 input_ids=batch["source_ids"],
                 attention_mask=source_mask_updated,
-                encoder_outputs=encoder_outputs)
-            dec = [tokenizer.decode(ids) for ids in outs]
-            texts = [tokenizer.decode(ids) for ids in batch['source_ids']]
-            targets = [tokenizer.decode(ids) for ids in batch['target_ids']]
+                encoder_outputs=encoder_outputs
+            )
 
-            
-        return corr/total
+            # Convert generated tokens to text
+            dec_texts = [
+                tokenizer.decode(ids, skip_special_tokens=True)
+                for ids in outs
+            ]
+
+            # Convert reference tokens to text
+            # (If your batch["target_ids"] are the code references)
+            ref_texts = [
+                tokenizer.decode(ids, skip_special_tokens=True)
+                for ids in batch["target_ids"]
+            ]
+
+            # Convert strings -> token lists for BLEU
+            # For single-reference corpora:
+            # reference_corpus expects a list of lists-of-lists: 
+            # each data point => [[ref_token_list]]
+            # translation_corpus expects a list of token lists
+            for pred_str, ref_str in zip(dec_texts, ref_texts):
+                pred_tokens = pred_str.strip().split()
+                ref_tokens = ref_str.strip().split()
+
+                translation_corpus.append(pred_tokens)
+                reference_corpus.append([ref_tokens])  # single reference
+
+            # (Optional) print some predictions for debug
+            if print_outputs and i < 2:
+                for idx in range(len(dec_texts)):
+                    print(f"INPUT: {tokenizer.decode(batch['source_ids'][idx], skip_special_tokens=True)}")
+                    print(f"PRED:  {dec_texts[idx]}")
+                    print(f"REF:   {ref_texts[idx]}")
+                    print("-" * 60)
+
+        # Now compute corpus-level BLEU
+        bleu_float = self.compute_bleu(reference_corpus, 
+                                       translation_corpus,
+                                       max_order=4, 
+                                       smooth=True)
+        # multiply by 100 if you prefer "percentage BLEU"
+        bleu_score = bleu_float * 100.0
+
+        if print_outputs:
+            print(f"BLEU score = {bleu_score:.2f}")
+
+        return bleu_score
 
 
 
@@ -706,10 +842,10 @@ class T5ContinualLearner:
                             val_acc.append(np.mean(acc))
                     acc = np.mean(overall_acc)
                 else:
-                    acc = self.validate(dataloader_val, task,
-                                        prompt=prompt, print_outputs=True)
-                    if task in ['record', 'cb'] or (task=='multirc' and self.multirc_idx!=None):
-                        acc = np.mean(acc) # averaging 2 scores
+                    acc = self.validate(dataloader_val, 
+                                        task,
+                                        prompt=prompt, 
+                                        print_outputs=True)
                     val_acc.append(acc)
 
                 if self.early_stopping:
@@ -722,7 +858,6 @@ class T5ContinualLearner:
         else:
             if self.early_stopping:
                 self.restore_best_model()
-        return val_acc
 
 
     
@@ -755,7 +890,8 @@ class T5ContinualLearner:
             print('Calculating test acc ...')
             if self.get_test_subset:
                 if progressive:
-                    curr_prompt = torch.tensor(self.previous_prompts, requires_grad=False).to(self.device)
+                    curr_prompt = torch.tensor(self.previous_prompts, 
+                                               requires_grad=False).to(self.device)
                 else:
                     if self.prefix_len>0:
                         curr_prompt = self.model.prompt
