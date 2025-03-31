@@ -14,8 +14,8 @@ def main(args):
     task_list = args.task_list
 
     model_name = args.model_name
-    continual_learner = T5ContinualLearner(model_name,
-                                           task_list,
+    continual_learner = T5ContinualLearner(task_list,
+                                           model_name,
                                            batch_size=args.batch_size,
                                            select_k_per_class=args.select_k_per_class,
                                            prefix_len=args.prefix_len,
@@ -36,7 +36,8 @@ def main(args):
 
     if args.multitask == 1:
         print('Multi task learning')
-        results_dict = continual_learner.multi_task_training(num_epochs=args.num_epochs, save_path=save_path)
+        results_dict = continual_learner.multi_task_training(num_epochs=args.num_epochs, 
+                                                             save_path=save_path)
         np.save(os.path.join(save_path, 'results_dict.npy'), results_dict)
 
     else:
@@ -79,16 +80,16 @@ if __name__ == "__main__":
         help='folder name to save',
         default='model.pth'
     )
-
+    
     parser.add_argument(
-    '--task_list',
-    type=str,
-    nargs='+',  # This means one or more arguments
-    help='List of tasks for training',
-    #required=True,
-    default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
-    )
-
+        '--task_list',
+        type=str,
+        nargs='+',  # This means one or more arguments
+        help='List of tasks for training',
+        #required=True,
+        default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
+        )
+    
     parser.add_argument(
         '--model_name',
         type=str,
