@@ -85,8 +85,8 @@ if __name__ == "__main__":
     type=str,
     nargs='+',  # This means one or more arguments
     help='List of tasks for training',
-    required=True,
-    #default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
+    #required=True,
+    default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
     )
 
     parser.add_argument(
