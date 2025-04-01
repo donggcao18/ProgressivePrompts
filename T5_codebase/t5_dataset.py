@@ -17,7 +17,7 @@ class T5Dataset:
         """
         
         self.tokenizer = tokenizer
-        self.task_list = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
+        self.task_list = ['CodeTrans', 'CodeSearchNet', 'BFP', 'CONCODE']
         self.task = task
         self.text_key = {'CONCODE': 'nl',
                            'CodeTrans': 'java',
@@ -48,16 +48,14 @@ class T5Dataset:
                             max_length=512,
                             #batched=False
                             ):
+        if task not in self.task_list:
+            raise ValueError(f"Unknown task name: {task}")
         tokenizer = self.tokenizer
         text_key = self.text_key[task]
         label_key = self.label_key[task]
-
-
-        if task not in self.task_list:
-            raise ValueError(f"Unknown task name: {task}")
         
         instruction = self.task_instructions[task]
-        text = examples[text_key[task]]
+        text = examples[text_key]
         text = instruction + \
                text + ' </s>' 
         
@@ -67,7 +65,7 @@ class T5Dataset:
                             max_length=max_length,
                             return_tensors="pt")
 
-        target_text = examples[label_key[task]]
+        target_text = examples[label_key]
         target_text += ' </s>'  
         target = tokenizer(target_text,
                             padding="max_length",
@@ -132,8 +130,9 @@ class T5Dataset:
             encoded_dataset = dataset.map(lambda x: self.preprocess_function(x, 
                                                                             task,
                                                                             max_length=max_length,
-                                                                            prefix_list=prefix_list),
-                                                                            #batched=False
+                                                                            #prefix_list=prefix_list
+                                                                            ),
+                                                                            batched=False
                                                                             )
             encoded_dataset.set_format(type='torch', columns=['source_ids', 'source_mask',
                                                               'target_ids', 'target_mask'])
@@ -152,10 +151,13 @@ class T5Dataset:
                 encoded_dataset = dataset.map(lambda x: self.preprocess_function(x, 
                                                                                  task,
                                                                                  max_length=max_length,
-                                                                                 prefix_list=prefix_list),
+                                                                                 #prefix_list=prefix_list
+                                                                                 ),
                                                                                  batched=False)
-                encoded_dataset.set_format(type='torch', columns=['source_ids', 'source_mask',
-                                                                  'target_ids', 'target_mask'])
+                encoded_dataset.set_format(type='torch', columns=['source_ids', 
+                                                                  'source_mask',
+                                                                  'target_ids', 
+                                                                  'target_mask'])
                 dataloader = DataLoader(encoded_dataset, batch_size=batch_size)
                 dataloaders_val_test.append(dataloader)
 

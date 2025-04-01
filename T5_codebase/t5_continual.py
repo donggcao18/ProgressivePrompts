@@ -77,7 +77,7 @@ class ResMLP(torch.nn.Module):
 class T5ContinualLearner:
     def __init__(self,
                  task_list,
-                 model_name='Salesforce/codet5-large',
+                 model_name,
                  batch_size=8,
                  select_k_per_class=-1,
                  prefix_len=0,
@@ -147,7 +147,7 @@ class T5ContinualLearner:
         """
         
         
-        self.TaskCode_benchmark = ['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP'] 
+        self.TaskCode_benchmark = ['CodeTrans', 'CodeSearchNet', 'BFP', 'CONCODE']
         self.task_list = task_list
 
         self.freeze_weights = freeze_weights
@@ -588,8 +588,6 @@ class T5ContinualLearner:
                 print_outputs=False):
         """
         Example validate function that calculates BLEU for T5 code generation.
-
-        self: assumed to have attributes like `self.model`, `self.tokenizer`, etc.
         """
         model = self.model
         tokenizer = self.tokenizer
@@ -600,14 +598,12 @@ class T5ContinualLearner:
         translation_corpus = [] # shape: [ [pred_tokens], [pred_tokens], ... ]
 
         for i, batch in enumerate(tqdm(dataloader_val)):
-            # Move tensors to device
+
             batch = {k: batch[k].to(self.device) for k in batch}
 
-            # Prepare T5 input embeddings
             inputs_embeds = model.encoder.embed_tokens(batch["source_ids"]).to(self.device)
 
             if prompt is not None:
-                # Prepend prompt embeddings, if using progressive or prefix
                 batch_size = inputs_embeds.shape[0]
                 inputs_embeds = torch.concat([prompt.repeat(batch_size, 1, 1),
                                             inputs_embeds],
@@ -635,8 +631,6 @@ class T5ContinualLearner:
                 return_dict=None,
             )
 
-            # Generate predictions
-            # (you can tweak max_length, num_beams, etc. below)
             outs = model.generate(
                 input_ids=batch["source_ids"],
                 attention_mask=source_mask_updated,
@@ -657,10 +651,6 @@ class T5ContinualLearner:
             ]
 
             # Convert strings -> token lists for BLEU
-            # For single-reference corpora:
-            # reference_corpus expects a list of lists-of-lists: 
-            # each data point => [[ref_token_list]]
-            # translation_corpus expects a list of token lists
             for pred_str, ref_str in zip(dec_texts, ref_texts):
                 pred_tokens = pred_str.strip().split()
                 ref_tokens = ref_str.strip().split()
