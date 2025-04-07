@@ -372,8 +372,10 @@ class T5ContinualLearner:
                 tasks_data_dict[task]['val'] = dataloader_val
                 tasks_data_dict[task]['test'] = dataloader_test
             else:
-                dataloader_val = ds2.get_final_ds(**data_params, k=k_val, split='test')
+                dataloader_val = ds2.get_final_ds(**data_params, k=k_val, split='validation')
                 tasks_data_dict[task]['val'] = dataloader_val
+                dataloader_test = ds2.get_final_ds(**data_params, k=k_val, split='test')
+                tasks_data_dict[task]['test'] = dataloader_val
 
         return tasks_data_dict
 
@@ -414,7 +416,8 @@ class T5ContinualLearner:
             full_prefix_len = prompt.shape[0]
 
         source_mask_updated = torch.concat( (batch["source_mask"][0][0].repeat(k,full_prefix_len),
-                                             batch["source_mask"]), axis=1)[:,:self.seq_len]
+                                             batch["source_mask"]), 
+                                             axis=1)[:,:self.seq_len]
 
         encoder_outputs = model.encoder(
                                 attention_mask=source_mask_updated,
@@ -426,7 +429,7 @@ class T5ContinualLearner:
                             )
 
         outputs = model(
-            input_ids=batch["source_ids"],
+            #input_ids=batch["source_ids"],
             attention_mask=source_mask_updated, 
             labels=lm_labels,
             decoder_attention_mask=batch['target_mask'],
@@ -585,7 +588,7 @@ class T5ContinualLearner:
                 dataloader_val,
                 task=None,
                 prompt=None,
-                print_outputs=False):
+                print_outputs=True):
         """
         Example validate function that calculates BLEU for T5 code generation.
         """
@@ -618,10 +621,8 @@ class T5ContinualLearner:
                     dim=1
                 )[:, :self.seq_len]
             else:
-                # No prompt
                 source_mask_updated = batch["source_mask"]
 
-            # Encode
             encoder_outputs = model.encoder(
                 attention_mask=source_mask_updated,
                 inputs_embeds=inputs_embeds,
@@ -632,7 +633,8 @@ class T5ContinualLearner:
             )
 
             outs = model.generate(
-                input_ids=batch["source_ids"],
+                input_ids=None,
+                #input_ids=batch["source_ids"],
                 attention_mask=source_mask_updated,
                 encoder_outputs=encoder_outputs
             )
@@ -805,6 +807,9 @@ class T5ContinualLearner:
                     self.memory_replay(tasks_to_generators, progressive)
 
             # evaluate accuracy after each epoch
+            for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        print(name, param.shape)
             if self.prefix_MLPs!=None:
                 mlp.eval()
                 prompt = mlp(model.prompt)
@@ -826,7 +831,7 @@ class T5ContinualLearner:
                         acc = self.validate(self.tasks_data_dict[eval_task]['val'],
                                             eval_task,
                                             prompt=prompt, 
-                                            print_outputs=False)
+                                            print_outputs=True)
                         overall_acc.append(np.mean(acc))
                         if eval_task==task: # record val accuracy for the current task
                             val_acc.append(np.mean(acc))
@@ -837,7 +842,7 @@ class T5ContinualLearner:
                                         prompt=prompt, 
                                         print_outputs=True)
                     val_acc.append(acc)
-
+    
                 if self.early_stopping:
                     self.update_best_model(acc, task=task)
                 print(epoch, task, '->', val_acc[-1])
@@ -862,7 +867,9 @@ class T5ContinualLearner:
                         data_replay_freq=-1,
                         ):
         results_dict = {}
-        if self.get_test_subset: results_dict['test'] = {}
+        #if self.get_test_subset: results_dict['test'] = {}
+
+        results_dict['test'] = {}
 
         for num, task in enumerate(task_list):
             eval_on_all_tasks = False if progressive or len(task_list)==1 else True
@@ -904,6 +911,7 @@ class T5ContinualLearner:
                                         curr_prompt,
                                         print_outputs=True)
                     results_dict['test'][task] = acc
+                    print(f'test accuracy on task {task} = {acc}')
             # saving results dict after each task
             np.save(os.path.join(save_path, 'results_dict.npy'), results_dict)
 

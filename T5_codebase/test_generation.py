@@ -5,7 +5,7 @@ from tqdm.auto import tqdm
 import logging, os, argparse
 
 from t5_continual import T5ContinualLearner
-
+from datasets import load_dataset
 
 def main(args):
     save_path = os.path.join(args.save_dir, args.save_name)
@@ -48,16 +48,14 @@ def main(args):
         elif args.num_epochs>200:
             eval_every_N = 10
 
-        results_dict = continual_learner.train_continual(continual_learner.task_list,
-                                                        epochs=args.num_epochs,
-                                                        save_path=save_path,
-                                                        progressive=args.progressive==1,
-                                                        eval_every_N=eval_every_N,
-                                                        test_eval_after_every_task=args.test_eval_after_every_task==1,
-                                                        data_replay_freq=args.data_replay_freq,
-                                                        )
-        np.save(os.path.join(save_path, 'results_dict.npy'), results_dict)
-        np.save(os.path.join(save_path, 'prompts.npy'), continual_learner.previous_prompts.detach().cpu().numpy())
+
+                                                        
+        task_dict = continual_learner.get_tasks_data_dict()
+        bleu_score = continual_learner.validate(task_dict['CodeSearchNet']['val'],
+                                                task=None,
+                                                prompt=None,
+                                                print_outputs=True)
+        print(bleu_score)
 
 
 
@@ -101,7 +99,7 @@ if __name__ == "__main__":
         '--num_epochs',
         type=int,
         help='Number of epochs to train model',
-        default=1
+        default=5
     )
 
     parser.add_argument(
@@ -187,7 +185,7 @@ if __name__ == "__main__":
         '--freeze_weights',
         type=int,
         help='Whether to freeze model weigts (except word emb)',
-        default=1
+        default=0
     )
 
     parser.add_argument(
@@ -197,12 +195,11 @@ if __name__ == "__main__":
         default='xxxxxxx' # freeze all
     )
 
-    #change to not create test subset
     parser.add_argument(
         '--get_test_subset',
         type=int,
         help='Whether to create a separate test split',
-        default=0
+        default=1
     )
 
     parser.add_argument(

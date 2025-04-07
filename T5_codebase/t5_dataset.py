@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
 """
-(uncheck) find official dataset and their exact collumn name
+(check) find official dataset and their exact collumn name
 """ 
 class T5Dataset:
     def __init__(self, tokenizer, task):
@@ -27,10 +27,10 @@ class T5Dataset:
                             'CodeTrans': 'cs',
                             'CodeSearchNet': 'docstring',
                             'BFP': 'fixed'}
-        self.task_instructions ={ 'CONCODE': 'Generate Java code from the following English description:\n',
-                                'CodeTrans': 'Translate the following Java code into C#:\n',
-                                'CodeSearchNet': 'Summarize the following Ruby code into English:\n',
-                                'BFP': 'Refactor or improve the following Java code:\n'}
+        self.task_instructions ={ 'CONCODE': 'Generate Java code from the following English description: ',
+                                'CodeTrans': 'Translate the following Java code into C#: ',
+                                'CodeSearchNet': 'Summarize the following Ruby code into English: ',
+                                'BFP': 'Refactor or improve the following Java code: '}
 
     """
     For code generation tasks: randomly select k examples from the dataset.
