@@ -13,7 +13,9 @@ from copy import deepcopy
 from transformers import AdamW
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
+import logging
 
+logger = logging.getLogger(__name__)
 
 class ResMLP(torch.nn.Module):
     def __init__(self, 
@@ -85,7 +87,7 @@ class T5ContinualLearner:
                  freeze_weights=True,
                  freeze_except='shared',
                  lr=0.3,
-                 weight_decay=1e-5,
+                 weight_decay=1e-4,
                  seq_len=512,
                  early_stopping=True,
                  prefix_MLP='None',
@@ -343,27 +345,26 @@ class T5ContinualLearner:
                 'task': task,
                 'batch_size': self.batch_size,
                 'max_length': self.seq_len,
-                'prefix_list': []  # using vector prompts, not textual
+                'prefix_list': []  
             }
 
             ds2 = t5_dataset.T5Dataset(self.tokenizer, task)
 
             k = -1
-            k_val = -1 if not self.get_test_subset else 500  # or any fixed small val set
+            k_val = -1 if not self.get_test_subset else 500  
 
-            # Load train dataloader
             dataloader_train = ds2.get_final_ds(**data_params, 
                                                 k=k, 
                                                 split='train')
             tasks_data_dict[task]['train'] = dataloader_train
 
-            # Optionally create a memory buffer for replay
             if memory_perc > 0:
                 k_mem = max(1, int(len(dataloader_train) * self.batch_size * memory_perc))
-                dataloader_mem = ds2.get_final_ds(**data_params, k=k_mem, split='train')
+                dataloader_mem = ds2.get_final_ds(**data_params, 
+                                                  k=k_mem, 
+                                                  split='train')
                 tasks_data_dict[task]['train_mem'] = dataloader_mem
 
-            # Load val/test sets
             if self.get_test_subset:
                 dataloader_val, dataloader_test = ds2.get_final_ds(**data_params, 
                                                                    k=k_val, 
@@ -372,9 +373,13 @@ class T5ContinualLearner:
                 tasks_data_dict[task]['val'] = dataloader_val
                 tasks_data_dict[task]['test'] = dataloader_test
             else:
-                dataloader_val = ds2.get_final_ds(**data_params, k=k_val, split='validation')
+                dataloader_val = ds2.get_final_ds(**data_params, 
+                                                  k=k_val, 
+                                                  split='validation')
                 tasks_data_dict[task]['val'] = dataloader_val
-                dataloader_test = ds2.get_final_ds(**data_params, k=k_val, split='test')
+                dataloader_test = ds2.get_final_ds(**data_params, 
+                                                   k=k_val, 
+                                                   split='test')
                 tasks_data_dict[task]['test'] = dataloader_val
 
         return tasks_data_dict
@@ -632,9 +637,20 @@ class T5ContinualLearner:
                 return_dict=None,
             )
 
+            if task == 'CodeSearchNet':
+                max_target_length = 128
+            elif task == 'CodeTrans':
+                max_target_length = 256
+            elif task == 'BFP':
+                max_target_length = 120
+            elif task == 'CONCODE':
+                max_target_length = 150
+            
             outs = model.generate(
                 input_ids=None,
                 #input_ids=batch["source_ids"],
+                repetition_penalty=1.2,
+                max_length= max_target_length,
                 attention_mask=source_mask_updated,
                 encoder_outputs=encoder_outputs
             )
@@ -752,7 +768,8 @@ class T5ContinualLearner:
                        eval_on_all_tasks=False,
                        data_replay_freq=-1):
 
-        print('task = ', task)
+        #print('task = ', task)
+        logger.info(f"Training on task: {task}")
         if progressive:
             assert self.prefix_len>0 # can only do progressive prompts when prompt tuning
             print('progressive prompts')
@@ -779,7 +796,7 @@ class T5ContinualLearner:
         val_acc = []
 
         for epoch in range(epochs):
-            print(epoch)
+            logger.info(f"Epoch {epoch}")
             model.train()
             if self.prefix_MLPs!=None:
                 mlp.train()
@@ -809,7 +826,7 @@ class T5ContinualLearner:
             # evaluate accuracy after each epoch
             for name, param in model.named_parameters():
                     if param.requires_grad:
-                        print(name, param.shape)
+                        logger.info(f"Trainable parameter: {name}m shape: {param.shape}")
             if self.prefix_MLPs!=None:
                 mlp.eval()
                 prompt = mlp(model.prompt)
@@ -842,10 +859,11 @@ class T5ContinualLearner:
                                         prompt=prompt, 
                                         print_outputs=True)
                     val_acc.append(acc)
-    
+
                 if self.early_stopping:
                     self.update_best_model(acc, task=task)
-                print(epoch, task, '->', val_acc[-1])
+                logger.info(f"Epoch {epoch} | Task: {task} -> Val Acc: {val_acc[-1]:.4f}")
+        
 
         if progressive:
             self.progress_previous_prompts(task=task)
@@ -866,15 +884,14 @@ class T5ContinualLearner:
                         test_eval_after_every_task=False, # only needed for methods with catastrophic forgetting
                         data_replay_freq=-1,
                         ):
-        results_dict = {}
         #if self.get_test_subset: results_dict['test'] = {}
-
-        results_dict['test'] = {}
+        acc = 0
 
         for num, task in enumerate(task_list):
             eval_on_all_tasks = False if progressive or len(task_list)==1 else True
             eval_frq = eval_every_N if not eval_on_all_tasks else int(epochs//3)
-            val_acc = self.train_one_task(task, epochs,
+            val_acc = self.train_one_task(task, 
+                                          epochs,
                                           progressive=progressive,
                                           eval_every_N=eval_frq,
                                           #eval_on_all_tasks=False, # too slow
@@ -882,42 +899,34 @@ class T5ContinualLearner:
                                           eval_on_all_tasks=eval_on_all_tasks,
                                           )
             print(task, val_acc)
-            results_dict[task] = val_acc
 
-            print('Calculating test acc ...')
-            if self.get_test_subset:
-                if progressive:
-                    curr_prompt = torch.tensor(self.previous_prompts, 
+            logger.info(f"Finished training on task: {task}")
+            if progressive:
+                curr_prompt = torch.tensor(self.previous_prompts, 
                                                requires_grad=False).to(self.device)
-                else:
-                    if self.prefix_len>0:
+            else:
+                if self.prefix_len>0:
                         curr_prompt = self.model.prompt
-                    else:
+                else:
                         curr_prompt = None
 
-                if test_eval_after_every_task:
+            if test_eval_after_every_task:
                     # eval test accuracy for all tasks
-                    results_dict['test'][num] = {}
-                    for test_task in task_list:
-                        acc = self.validate(self.tasks_data_dict[test_task]['test'],
-                                            test_task,
-                                            curr_prompt,
-                                            print_outputs=True)
-                        results_dict['test'][num][test_task] = acc
-
-                else:
-                    acc = self.validate(self.tasks_data_dict[task]['test'],
-                                        task,
+                for test_task in task_list:
+                    acc = self.validate(self.tasks_data_dict[test_task]['test'],
+                                        test_task,
                                         curr_prompt,
                                         print_outputs=True)
-                    results_dict['test'][task] = acc
-                    print(f'test accuracy on task {task} = {acc}')
-            # saving results dict after each task
-            np.save(os.path.join(save_path, 'results_dict.npy'), results_dict)
+                    logger.info(f"Test accuracy on task {test_task} = {acc}")
 
-        return results_dict
+            else:
+                acc = self.validate(self.tasks_data_dict[task]['test'],
+                                    task,                                        
+                                    curr_prompt,
+                                    print_outputs=True)
+                logger.info(f"Test accuracy on task {task} = {acc}")
 
-
+        return acc
 
 
     # Perform multi-task training
