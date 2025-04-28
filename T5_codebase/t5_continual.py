@@ -10,7 +10,7 @@ import logging, os, argparse
 import t5_dataset
 from itertools import cycle
 from copy import deepcopy
-from transformers import AdamW
+from transformers.optimization import AdamW
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 import logging
