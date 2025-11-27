@@ -15,7 +15,7 @@ def main(args):
 
     model_name = args.model_name
     continual_learner = T5ContinualLearner(task_list,
-                                           model_name,
+                                           model_name=args.model_name,
                                            batch_size=args.batch_size,
                                            select_k_per_class=args.select_k_per_class,
                                            prefix_len=args.prefix_len,
@@ -86,14 +86,14 @@ if __name__ == "__main__":
         nargs='+', 
         help='List of tasks for training',
         #required=True,
-        default=['CodeTrans','CONCODE', 'CodeSearchNet', 'BFP']
+        default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
         )
     
     parser.add_argument(
         '--model_name',
         type=str,
         help='Name of the model used for training',
-        default='Salesforce/codet5-small'
+        default='t5-base'
     )
 
     parser.add_argument(
