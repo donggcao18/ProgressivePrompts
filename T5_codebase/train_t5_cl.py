@@ -93,7 +93,7 @@ if __name__ == "__main__":
         '--model_name',
         type=str,
         help='Name of the model used for training',
-        default='t5-base'
+        default='Salesforce/codet5p-770m'
     )
 
     parser.add_argument(
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         '--batch_size',
         type=int,
         help='Batch size',
-        default=32
+        default=16
     )
 
     parser.add_argument(

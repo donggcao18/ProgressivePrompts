@@ -56,11 +56,11 @@ class T5Dataset:
         
         instruction = self.task_instructions[task]
         text = examples[text_key]
-        """
+        
         text = instruction + \
                text + ' </s>' 
-        """
-        text = text + ' </s>' 
+    
+        # text = text + ' </s>' 
         
         source = tokenizer(text,
                             padding="max_length",

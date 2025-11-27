@@ -14,6 +14,7 @@ from transformers import AdamW
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 import logging
+from compute_metric import compute_smooth_bleu
 
 logger = logging.getLogger(__name__)
 
@@ -685,10 +686,16 @@ class T5ContinualLearner:
                     print("-" * 60)
 
         # Now compute corpus-level BLEU
-        bleu_float = self.compute_bleu(reference_corpus, 
+        if task == 'CodeSearchNet':
+            bleu_float = compute_smooth_bleu(reference_corpus, 
                                        translation_corpus,
                                        max_order=4, 
                                        smooth=True)
+        else:
+            bleu_float = self.compute_bleu(reference_corpus, 
+                                        translation_corpus,
+                                        max_order=4, 
+                                        smooth=True)
         # multiply by 100 if you prefer "percentage BLEU"
         bleu_score = bleu_float * 100.0
 

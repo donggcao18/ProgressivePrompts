@@ -4,11 +4,11 @@
 python3 train_t5_cl.py \
     --save_dir data \
     --save_name t5_continual \
-    --task_list CONCODE,CodeTrans,CodeSearchNet,BFP \
-    --model_name Salesforce/codet5-770m \
-    --num_epochs 2 \
+    --task_list CONCODE CodeTrans CodeSearchNet BFP \
+    --model_name Salesforce/codet5p-770m \
+    --num_epochs 3 \
     --multitask 0 \
-    --batch_size 32 \
+    --batch_size 16 \
     --seq_len 512 \
     --prefix_len 10 \
     --prefix_path "" \
