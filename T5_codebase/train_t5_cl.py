@@ -29,7 +29,10 @@ def main(args):
                                            mlp_layer_norm=args.mlp_layer_norm==1,
                                            bottleneck_size=args.bottleneck_size,
                                            get_test_subset=args.get_test_subset==1,
-                                           memory_perc=args.memory_perc
+                                           memory_perc=args.memory_perc,
+                                           max_train=args.max_train,
+                                           max_eval=args.max_eval,
+                                           max_test=args.max_test
                                            )
     
     set_logger(os.path.join(save_path, 'logs'))
@@ -70,7 +73,7 @@ if __name__ == "__main__":
         '--save_dir',
         type=str,
         help='base directory of all models / features (should not be changed)',
-        default=r'data' 
+        default='data' 
     )
 
     parser.add_argument(
@@ -230,6 +233,27 @@ if __name__ == "__main__":
         type=int,
         help='MLP bottleneck size',
         default=800
+    )
+
+    parser.add_argument(
+        '--max_train',
+        type=int,
+        help='Max number of training samples per task (-1 = use all)',
+        default=-1
+    )
+
+    parser.add_argument(
+        '--max_eval',
+        type=int,
+        help='Max number of validation samples per task (-1 = use all)',
+        default=-1
+    )
+
+    parser.add_argument(
+        '--max_test',
+        type=int,
+        help='Max number of test samples per task (-1 = use all)',
+        default=-1
     )
 
     main(parser.parse_args())
