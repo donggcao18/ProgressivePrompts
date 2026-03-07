@@ -5,7 +5,7 @@ import numpy as np
 import collections
 import math
 from tqdm.auto import tqdm
-import logging, os, argparse, csv
+import logging, os, argparse, json
 
 import t5_dataset
 from itertools import cycle
@@ -614,14 +614,9 @@ class T5ContinualLearner:
 
         # Open log file for writing predictions
         if log_file is not None:
-            file_exists = os.path.isfile(log_file) and os.path.getsize(log_file) > 0
-            log_fh = open(log_file, 'a', newline='', encoding='utf-8')
-            log_writer = csv.writer(log_fh)
-            if not file_exists:
-                log_writer.writerow(['Task', 'Input', 'Prediction', 'Label'])
+            log_fh = open(log_file, 'a', encoding='utf-8')
         else:
             log_fh = None
-            log_writer = None
 
         # We'll accumulate references & predictions across the whole dataset
         reference_corpus = []   # shape: [ [ [ref_tokens], [ref_tokens2], ... ], ... ]
@@ -700,9 +695,9 @@ class T5ContinualLearner:
                 translation_corpus.append(pred_tokens)
                 reference_corpus.append([ref_tokens])  # single reference
 
-                if log_writer is not None:
+                if log_fh is not None:
                     src_text = tokenizer.decode(src_ids, skip_special_tokens=True)
-                    log_writer.writerow([task, src_text, pred_str, ref_str])
+                    log_fh.write(json.dumps({'task': task, 'input': src_text, 'prediction': pred_str, 'label': ref_str}) + '\n')
 
             # (Optional) print some predictions for debug
             if print_outputs and i < 2:
@@ -724,7 +719,7 @@ class T5ContinualLearner:
             print(f"BLEU score = {bleu_score:.2f}")
 
         if log_fh is not None:
-            log_writer.writerow(['--- BLEU ---', '', f'{bleu_score:.4f}', ''])
+            log_fh.write(json.dumps({'task': task, 'bleu': round(bleu_score, 4)}) + '\n')
             log_fh.close()
 
         return bleu_score
@@ -922,8 +917,8 @@ class T5ContinualLearner:
         #if self.get_test_subset: results_dict['test'] = {}
         acc = 0
 
-        test_log_file = os.path.join(save_path, 'test_predictions.csv') if save_path else None
-        eval_log_file = os.path.join(save_path, 'eval_predictions.csv') if save_path else None
+        test_log_file = os.path.join(save_path, 'test_predictions.jsonl') if save_path else None
+        eval_log_file = os.path.join(save_path, 'eval_predictions.jsonl') if save_path else None
 
         # Clear log files at the start of a new run
         for f in [test_log_file, eval_log_file]:
@@ -981,7 +976,7 @@ class T5ContinualLearner:
         tasks_data_dict = self.tasks_data_dict
         val_scores = {x: [] for x in list(tasks_data_dict)}
 
-        test_log_file = os.path.join(save_path, 'test_predictions.csv') if save_path else None
+        test_log_file = os.path.join(save_path, 'test_predictions.jsonl') if save_path else None
         if test_log_file is not None and os.path.isfile(test_log_file):
             os.remove(test_log_file)
         # getting index of the largest dataset (other datasets will be cycled)
