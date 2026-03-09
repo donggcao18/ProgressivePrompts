@@ -352,7 +352,7 @@ class T5ContinualLearner:
                 'task': task,
                 'batch_size': self.batch_size,
                 'max_length': self.seq_len,
-                'prefix_list': []  
+                # 'prefix_list': []  
             }
 
             ds2 = t5_dataset.T5Dataset(self.tokenizer, task)

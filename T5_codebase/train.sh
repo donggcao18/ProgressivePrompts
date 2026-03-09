@@ -9,7 +9,7 @@ python train_t5_cl.py \
     --save_dir log \
     --save_name codet5p-770m \
     --task_list CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST \
-    --model_name Salesforce/codet5-large \
+    --model_name Salesforce/codet5p-770m \
     --num_epochs 5 \
     --batch_size 16 \
     --seq_len 512 \
