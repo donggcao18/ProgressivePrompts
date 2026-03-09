@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 
@@ -200,9 +201,10 @@ class T5Dataset:
                 'validation': ['validation'],
                 'test': ['test'],
             }
+            _cache_dir = os.path.join(os.path.dirname(__file__), 'dataset', 'theVault')
             dataset_dict = load_dataset(
                 'Fsoft-AIC/the-vault-function',
-                cache_dir='/dataset/theVault',
+                cache_dir=_cache_dir,
                 languages=['c#'],
                 split_set=_vault_split_map[split],
             )
