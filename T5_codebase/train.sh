@@ -13,7 +13,6 @@ python train_t5_cl.py \
     --num_epochs 5 \
     --batch_size 16 \
     --seq_len 512 \
-    --prefix_len '' \
     --lr 0.1 \
     --progressive 1 \
     --freeze_weights 1 \
