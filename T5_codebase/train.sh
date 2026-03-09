@@ -6,7 +6,7 @@ export CUDA_VISIBLE_DEVICES=1
 port=$(shuf -i25000-30000 -n1)
 
 python train_t5_cl.py \
-    --save_dir data \
+    --save_dir log \
     --save_name codet5p-770m \
     --task_list CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST \
     --model_name Salesforce/codet5p-770m \
