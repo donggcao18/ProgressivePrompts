@@ -917,15 +917,14 @@ class T5ContinualLearner:
         #if self.get_test_subset: results_dict['test'] = {}
         acc = 0
 
-        test_log_file = os.path.join(save_path, 'test_predictions.jsonl') if save_path else None
-        eval_log_file = os.path.join(save_path, 'eval_predictions.jsonl') if save_path else None
-
-        # Clear log files at the start of a new run
-        for f in [test_log_file, eval_log_file]:
-            if f is not None and os.path.isfile(f):
-                os.remove(f)
+        def make_log_file(prefix, task):
+            if save_path:
+                return os.path.join(save_path, f'{prefix}_{task}.jsonl')
+            return None
 
         for num, task in enumerate(task_list):
+            eval_log_file = make_log_file('eval_predictions', task)
+
             eval_on_all_tasks = False if progressive or len(task_list)==1 else True
             eval_frq = eval_every_N if not eval_on_all_tasks else int(epochs//3)
             val_acc = self.train_one_task(task,
@@ -949,24 +948,15 @@ class T5ContinualLearner:
                 else:
                         curr_prompt = None
 
-            if test_eval_after_every_task:
-                    # eval test accuracy for all tasks
-                for test_task in task_list:
-                    if test_task != task:
-                        acc = self.validate(self.tasks_data_dict[test_task]['test'],
-                                            test_task,
-                                            curr_prompt,
-                                            print_outputs=True,
-                                            log_file=test_log_file)
-                        logger.info(f"Test accuracy on task {test_task} = {acc}")
-
-            else:
-                acc = self.validate(self.tasks_data_dict[task]['test'],
-                                    task,
+            # Test only on tasks seen so far (tasks 0..num inclusive)
+            test_log_file = make_log_file('test_predictions', task)
+            for test_task in task_list[:num + 1]:
+                acc = self.validate(self.tasks_data_dict[test_task]['test'],
+                                    test_task,
                                     curr_prompt,
                                     print_outputs=True,
                                     log_file=test_log_file)
-                logger.info(f"Test accuracy on task {task} = {acc}")
+                logger.info(f"Test accuracy on task {test_task} = {acc}")
 
         return acc
 

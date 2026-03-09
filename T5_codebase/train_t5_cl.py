@@ -3,14 +3,16 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 import logging, os, argparse
+from datetime import datetime
 
 from t5_continual import T5ContinualLearner
 from utils import set_logger
 
 def main(args):
-    save_path = os.path.join(args.save_dir, args.save_name)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_path = os.path.join(args.save_dir, f"{args.save_name}_{timestamp}")
     if not os.path.exists(save_path):
-        os.mkdir(save_path)
+        os.makedirs(save_path)
     task_list = args.task_list
 
     model_name = args.model_name
