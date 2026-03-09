@@ -827,6 +827,7 @@ class T5ContinualLearner:
                 tasks_to_generators = self.create_memory_replay_generators(task, split='train_mem')
 
 
+            log_every = 500  # log train loss every N steps
             for i, batch in enumerate(tqdm(dataloader_train)):
                 batch = {k:batch[k].to('cuda') for k in batch}
 
@@ -840,6 +841,9 @@ class T5ContinualLearner:
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+
+                if (i + 1) % log_every == 0:
+                    logger.info(f"Epoch {epoch} | Step {i + 1} | Task: {task} -> Train Loss: {loss.item():.4f}")
 
                 # performing data replay on all previous tasks
                 if data_replay_freq != -1 and i%data_replay_freq == 0:
