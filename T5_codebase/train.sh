@@ -35,7 +35,7 @@ port=$(shuf -i25000-30000 -n1)
 python train_t5_cl.py \
     --save_dir log \
     --save_name codet5p-770m \
-    --task_list  TheVault_Csharp CoST \
+    --task_list  TheVault_Csharp CoST RunBugRun\
     --model_name Salesforce/codet5p-770m \
     --num_epochs 3 \
     --batch_size 16 \
