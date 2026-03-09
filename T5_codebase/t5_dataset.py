@@ -34,7 +34,7 @@ class T5Dataset:
                            'BFP': 'buggy',
                            'KodCode': 'question',
                            'RunBugRun': 'buggy_code',
-                           'CoST': 'code',
+                           'CoST': 'lang1',
                            'TheVault_Csharp': 'code'}
         self.label_key = {'CONCODE': 'code',
                             'CodeTrans': 'cs',
@@ -42,7 +42,7 @@ class T5Dataset:
                             'BFP': 'fixed',
                             'KodCode': 'solution',
                             'RunBugRun': 'fixed_code',
-                            'CoST': 'docstring',
+                            'CoST': 'lang2',
                             'TheVault_Csharp': 'docstring'}
         self.task_instructions = {
                                 'CONCODE': 'Generate Java code from the following English description: ',
