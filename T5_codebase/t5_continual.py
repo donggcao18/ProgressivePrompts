@@ -699,13 +699,7 @@ class T5ContinualLearner:
                     src_text = tokenizer.decode(src_ids, skip_special_tokens=True)
                     log_fh.write(json.dumps({'task': task, 'input': src_text, 'prediction': pred_str, 'label': ref_str}) + '\n')
 
-            # (Optional) print some predictions for debug
-            if print_outputs and i < 2:
-                for idx in range(len(dec_texts)):
-                    print(f"INPUT: {tokenizer.decode(batch['source_ids'][idx], skip_special_tokens=True)}")
-                    print(f"PRED:  {dec_texts[idx]}")
-                    print(f"REF:   {ref_texts[idx]}")
-                    print("-" * 60)
+
 
         # Now compute corpus-level BLEU
         bleu_float = self.compute_bleu(reference_corpus, 

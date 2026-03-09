@@ -13,7 +13,7 @@ port=$(shuf -i25000-30000 -n1)
 #     --num_epochs 3 \
 #     --batch_size 16 \
 #     --seq_len 512 \
-#     --lr 0.3 \
+#     --lr 3e-4 \
 #     --progressive 1 \
 #     --freeze_weights 1 \
 #     --freeze_except xxxxxxx \
@@ -40,7 +40,7 @@ python train_t5_cl.py \
     --num_epochs 3 \
     --batch_size 16 \
     --seq_len 512 \
-    --lr 0.3 \
+    --lr 3e-4 \
     --progressive 1 \
     --freeze_weights 1 \
     --freeze_except xxxxxxx \
