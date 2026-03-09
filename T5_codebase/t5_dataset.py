@@ -202,7 +202,7 @@ class T5Dataset:
             }
             dataset_dict = load_dataset(
                 'Fsoft-AIC/the-vault-function',
-                cache_dir='/data/theVault',
+                cache_dir='/dataset/theVault',
                 languages=['c#'],
                 split_set=_vault_split_map[split],
             )
