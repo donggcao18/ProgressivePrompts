@@ -6,7 +6,7 @@ export CUDA_VISIBLE_DEVICES=1
 port=$(shuf -i25000-30000 -n1)
 
 # CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST
-python train_t5_cl.py \
+accelerate launch --config_file accelerate_config.yaml train_t5_cl.py \
     --save_dir log \
     --save_name codet5p-770m \
     --task_list CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST \
