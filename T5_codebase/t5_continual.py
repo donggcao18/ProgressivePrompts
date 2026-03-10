@@ -5,12 +5,13 @@ import numpy as np
 import collections
 import math
 from tqdm.auto import tqdm
-import logging, os, argparse
+import logging, os, argparse, json
 
 import t5_dataset
 from itertools import cycle
 from copy import deepcopy
-from transformers import AdamW
+#from transformers import AdamW
+from torch.optim import AdamW
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 import logging
@@ -98,6 +99,9 @@ class T5ContinualLearner:
                  weight_decay_mlp=None,
                  get_test_subset=True,
                  memory_perc=0.0,
+                 max_train=-1,
+                 max_eval=-1,
+                 max_test=-1,
                  ):
         
         """Class for CL & prompt tuning experiments with T5 model.
@@ -212,6 +216,9 @@ class T5ContinualLearner:
 
         # Get task -> data dictionary for CL training
         self.get_test_subset = get_test_subset
+        self.max_train = max_train
+        self.max_eval = max_eval
+        self.max_test = max_test
         self.tasks_data_dict = self.get_tasks_data_dict(memory_perc=memory_perc)
 
 
@@ -346,13 +353,14 @@ class T5ContinualLearner:
                 'task': task,
                 'batch_size': self.batch_size,
                 'max_length': self.seq_len,
-                'prefix_list': []  
+                # 'prefix_list': []  
             }
 
             ds2 = t5_dataset.T5Dataset(self.tokenizer, task)
 
-            k = -1
-            k_val = -1 if not self.get_test_subset else 500  
+            k = self.max_train
+            k_val = self.max_eval if not self.get_test_subset else (500 if self.max_eval == -1 else self.max_eval)
+            k_test = self.max_test
 
             dataloader_train = ds2.get_final_ds(**data_params, 
                                                 k=k, 
@@ -379,9 +387,11 @@ class T5ContinualLearner:
                                                   split='validation')
                 tasks_data_dict[task]['val'] = dataloader_val
                 dataloader_test = ds2.get_final_ds(**data_params, 
-                                                   k=k_val, 
+                                                   k=k_test, 
                                                    split='test')
-                tasks_data_dict[task]['test'] = dataloader_val
+                tasks_data_dict[task]['test'] = dataloader_test
+            
+            print(f"Data loaded for task {task}: Train size: {len(dataloader_train.dataset)}, Val size: {len(dataloader_val.dataset)}, Test size: {len(dataloader_test.dataset)}")
 
         return tasks_data_dict
 
@@ -594,13 +604,20 @@ class T5ContinualLearner:
                 dataloader_val,
                 task=None,
                 prompt=None,
-                print_outputs=True):
+                print_outputs=True,
+                log_file=None):
         """
         Example validate function that calculates BLEU for T5 code generation.
         """
         model = self.model
         tokenizer = self.tokenizer
         model.eval()
+
+        # Open log file for writing predictions
+        if log_file is not None:
+            log_fh = open(log_file, 'a', encoding='utf-8')
+        else:
+            log_fh = None
 
         # We'll accumulate references & predictions across the whole dataset
         reference_corpus = []   # shape: [ [ [ref_tokens], [ref_tokens2], ... ], ... ]
@@ -646,6 +663,8 @@ class T5ContinualLearner:
                 max_target_length = 120
             elif task == 'CONCODE':
                 max_target_length = 150
+            else:
+                max_target_length = 256
             
             outs = model.generate(
                 input_ids=None,
@@ -669,21 +688,19 @@ class T5ContinualLearner:
                 for ids in batch["target_ids"]
             ]
 
-            # Convert strings -> token lists for BLEU
-            for pred_str, ref_str in zip(dec_texts, ref_texts):
+            # Convert strings -> token lists for BLEU and optionally log
+            for pred_str, ref_str, src_ids in zip(dec_texts, ref_texts, batch['source_ids']):
                 pred_tokens = pred_str.strip().split()
                 ref_tokens = ref_str.strip().split()
 
                 translation_corpus.append(pred_tokens)
                 reference_corpus.append([ref_tokens])  # single reference
 
-            # (Optional) print some predictions for debug
-            if print_outputs and i < 2:
-                for idx in range(len(dec_texts)):
-                    print(f"INPUT: {tokenizer.decode(batch['source_ids'][idx], skip_special_tokens=True)}")
-                    print(f"PRED:  {dec_texts[idx]}")
-                    print(f"REF:   {ref_texts[idx]}")
-                    print("-" * 60)
+                if log_fh is not None:
+                    src_text = tokenizer.decode(src_ids, skip_special_tokens=True)
+                    log_fh.write(json.dumps({'task': task, 'input': src_text, 'prediction': pred_str, 'label': ref_str}) + '\n')
+
+
 
         # Now compute corpus-level BLEU
         if task == 'CodeSearchNet':
@@ -701,6 +718,10 @@ class T5ContinualLearner:
 
         if print_outputs:
             print(f"BLEU score = {bleu_score:.2f}")
+
+        if log_fh is not None:
+            log_fh.write(json.dumps({'task': task, 'bleu': round(bleu_score, 4)}) + '\n')
+            log_fh.close()
 
         return bleu_score
 
@@ -773,7 +794,8 @@ class T5ContinualLearner:
                        progressive=True,
                        eval_every_N=1,
                        eval_on_all_tasks=False,
-                       data_replay_freq=-1):
+                       data_replay_freq=-1,
+                       eval_log_file=None):
 
         #print('task = ', task)
         logger.info(f"Training on task: {task}")
@@ -812,6 +834,7 @@ class T5ContinualLearner:
                 tasks_to_generators = self.create_memory_replay_generators(task, split='train_mem')
 
 
+            log_every = 500  # log train loss every N steps
             for i, batch in enumerate(tqdm(dataloader_train)):
                 batch = {k:batch[k].to('cuda') for k in batch}
 
@@ -825,6 +848,9 @@ class T5ContinualLearner:
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+
+                if (i + 1) % log_every == 0:
+                    logger.info(f"Epoch {epoch} | Step {i + 1} | Task: {task} -> Train Loss: {loss.item():.4f}")
 
                 # performing data replay on all previous tasks
                 if data_replay_freq != -1 and i%data_replay_freq == 0:
@@ -854,17 +880,19 @@ class T5ContinualLearner:
                     for eval_task in self.task_list:
                         acc = self.validate(self.tasks_data_dict[eval_task]['val'],
                                             eval_task,
-                                            prompt=prompt, 
-                                            print_outputs=True)
+                                            prompt=prompt,
+                                            print_outputs=True,
+                                            log_file=eval_log_file)
                         overall_acc.append(np.mean(acc))
                         if eval_task==task: # record val accuracy for the current task
                             val_acc.append(np.mean(acc))
                     acc = np.mean(overall_acc)
                 else:
-                    acc = self.validate(dataloader_val, 
+                    acc = self.validate(dataloader_val,
                                         task,
-                                        prompt=prompt, 
-                                        print_outputs=True)
+                                        prompt=prompt,
+                                        print_outputs=True,
+                                        log_file=eval_log_file)
                     val_acc.append(acc)
 
                 if self.early_stopping:
@@ -894,22 +922,30 @@ class T5ContinualLearner:
         #if self.get_test_subset: results_dict['test'] = {}
         acc = 0
 
+        def make_log_file(prefix, task):
+            if save_path:
+                return os.path.join(save_path, f'{prefix}_{task}.jsonl')
+            return None
+
         for num, task in enumerate(task_list):
+            eval_log_file = make_log_file('eval_predictions', task)
+
             eval_on_all_tasks = False if progressive or len(task_list)==1 else True
             eval_frq = eval_every_N if not eval_on_all_tasks else int(epochs//3)
-            val_acc = self.train_one_task(task, 
+            val_acc = self.train_one_task(task,
                                           epochs,
                                           progressive=progressive,
                                           eval_every_N=eval_frq,
                                           #eval_on_all_tasks=False, # too slow
                                           data_replay_freq=data_replay_freq,
                                           eval_on_all_tasks=eval_on_all_tasks,
+                                          eval_log_file=eval_log_file,
                                           )
             print(task, val_acc)
 
             logger.info(f"Finished training on task: {task}")
             if progressive:
-                curr_prompt = torch.tensor(self.previous_prompts, 
+                curr_prompt = torch.tensor(self.previous_prompts,
                                                requires_grad=False).to(self.device)
             else:
                 if self.prefix_len>0:
@@ -917,21 +953,15 @@ class T5ContinualLearner:
                 else:
                         curr_prompt = None
 
-            if test_eval_after_every_task:
-                    # eval test accuracy for all tasks
-                for test_task in task_list:
-                    acc = self.validate(self.tasks_data_dict[test_task]['test'],
-                                        test_task,
-                                        curr_prompt,
-                                        print_outputs=True)
-                    logger.info(f"Test accuracy on task {test_task} = {acc}")
-
-            else:
-                acc = self.validate(self.tasks_data_dict[task]['test'],
-                                    task,                                        
+            # Test only on tasks seen so far (tasks 0..num inclusive)
+            test_log_file = make_log_file('test_predictions', task)
+            for test_task in task_list[:num + 1]:
+                acc = self.validate(self.tasks_data_dict[test_task]['test'],
+                                    test_task,
                                     curr_prompt,
-                                    print_outputs=True)
-                logger.info(f"Test accuracy on task {task} = {acc}")
+                                    print_outputs=True,
+                                    log_file=test_log_file)
+                logger.info(f"Test accuracy on task {test_task} = {acc}")
 
         return acc
 
@@ -940,6 +970,10 @@ class T5ContinualLearner:
     def multi_task_training(self, num_epochs=5, progressive=False, save_path=''):
         tasks_data_dict = self.tasks_data_dict
         val_scores = {x: [] for x in list(tasks_data_dict)}
+
+        test_log_file = os.path.join(save_path, 'test_predictions.jsonl') if save_path else None
+        if test_log_file is not None and os.path.isfile(test_log_file):
+            os.remove(test_log_file)
         # getting index of the largest dataset (other datasets will be cycled)
         task_lengths = [len(tasks_data_dict[t]['train'])*self.batch_size for t in list(tasks_data_dict)]
         idx_biggest_task = np.argmax(task_lengths)
@@ -994,7 +1028,8 @@ class T5ContinualLearner:
                 acc = self.validate(self.tasks_data_dict[test_task]['test'],
                                     test_task,
                                     curr_prompt,
-                                    print_outputs=True)
+                                    print_outputs=True,
+                                    log_file=test_log_file)
                 results_dict['test'][epoch][test_task] = acc
 
             if save_path!='':
