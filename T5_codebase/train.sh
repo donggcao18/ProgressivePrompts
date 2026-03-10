@@ -2,7 +2,7 @@
 export HF_HOME=./.cache
 export HF_DATASETS_CACHE=./.cache
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0,1
 port=$(shuf -i25000-30000 -n1)
 
 # CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST
