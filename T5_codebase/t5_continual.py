@@ -15,6 +15,7 @@ from torch.optim import AdamW
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 import logging
+from compute_metric import compute_smooth_bleu
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,8 @@ class T5ContinualLearner:
             else: # initializing previous prompts from the path
                 print('Using pre-trained progressive prompt - ' + prefix_path)
                 self.previous_prompts = torch.tensor(np.load(prefix_path), requires_grad = False).to(self.device)
+                print(f'Loaded previous_prompts shape: {self.previous_prompts.shape}  '
+                      f'(num_prompt_tokens={self.previous_prompts.shape[0]}, emb_dim={self.previous_prompts.shape[1]})')
         
         # Model to cuda
         self.model.to(self.device) 
@@ -702,10 +705,16 @@ class T5ContinualLearner:
 
 
         # Now compute corpus-level BLEU
-        bleu_float = self.compute_bleu(reference_corpus, 
+        if task == 'CodeSearchNet':
+            bleu_float = compute_smooth_bleu(reference_corpus, 
                                        translation_corpus,
                                        max_order=4, 
                                        smooth=True)
+        else:
+            bleu_float = self.compute_bleu(reference_corpus, 
+                                        translation_corpus,
+                                        max_order=4, 
+                                        smooth=True)
         # multiply by 100 if you prefer "percentage BLEU"
         bleu_score = bleu_float * 100.0
 
@@ -911,8 +920,12 @@ class T5ContinualLearner:
                         eval_every_N=1,
                         test_eval_after_every_task=False, # only needed for methods with catastrophic forgetting
                         data_replay_freq=-1,
+                        start_task=0,  # resume from this task index (0-based); skip already-trained tasks
                         ):
         #if self.get_test_subset: results_dict['test'] = {}
+        if start_task > 0:
+            print(f'Resuming from task index {start_task} ({task_list[start_task]}); '
+                  f'skipping tasks {task_list[:start_task]}')
         acc = 0
 
         def make_log_file(prefix, task):
@@ -921,6 +934,8 @@ class T5ContinualLearner:
             return None
 
         for num, task in enumerate(task_list):
+            if num < start_task:
+                continue  # skip tasks already trained before the crash
             eval_log_file = make_log_file('eval_predictions', task)
 
             eval_on_all_tasks = False if progressive or len(task_list)==1 else True
@@ -937,6 +952,13 @@ class T5ContinualLearner:
             print(task, val_acc)
 
             logger.info(f"Finished training on task: {task}")
+            # Save progressive prompts checkpoint after each task so training can be
+            # resumed with --prefix_path if the run is interrupted later.
+            if progressive and save_path:
+                ckpt_path = os.path.join(save_path, f'prompts_after_task{num}_{task}.npy')
+                np.save(ckpt_path, self.previous_prompts.detach().cpu().numpy())
+                print(f'Saved progressive prompts checkpoint -> {ckpt_path}  shape: {self.previous_prompts.shape}')
+
             if progressive:
                 curr_prompt = torch.tensor(self.previous_prompts,
                                                requires_grad=False).to(self.device)

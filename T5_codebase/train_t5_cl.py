@@ -17,7 +17,7 @@ def main(args):
 
     model_name = args.model_name
     continual_learner = T5ContinualLearner(task_list,
-                                           model_name,
+                                           model_name=args.model_name,
                                            batch_size=args.batch_size,
                                            select_k_per_class=args.select_k_per_class,
                                            prefix_len=args.prefix_len,
@@ -62,7 +62,8 @@ def main(args):
                                             progressive=args.progressive==1,
                                             eval_every_N=eval_every_N,
                                             test_eval_after_every_task=args.test_eval_after_every_task==1,
-                                            data_replay_freq=args.data_replay_freq)
+                                            data_replay_freq=args.data_replay_freq,
+                                            start_task=args.start_task)
         np.save(os.path.join(save_path, 'prompts.npy'), continual_learner.previous_prompts.detach().cpu().numpy())
 
 
@@ -91,14 +92,14 @@ if __name__ == "__main__":
         nargs='+', 
         help='List of tasks for training',
         #required=True,
-        default=['CodeTrans','CONCODE', 'CodeSearchNet', 'BFP']
+        default=['CONCODE', 'CodeTrans', 'CodeSearchNet', 'BFP']
         )
     
     parser.add_argument(
         '--model_name',
         type=str,
         help='Name of the model used for training',
-        default='Salesforce/codet5-small'
+        default='Salesforce/codet5p-770m'
     )
 
     parser.add_argument(
@@ -119,7 +120,7 @@ if __name__ == "__main__":
         '--batch_size',
         type=int,
         help='Batch size',
-        default=4
+        default=16
     )
 
     parser.add_argument(
@@ -256,6 +257,14 @@ if __name__ == "__main__":
         type=int,
         help='Max number of test samples per task (-1 = use all)',
         default=-1
+    )
+
+    parser.add_argument(
+        '--start_task',
+        type=int,
+        help='0-based index of the task to resume from (skip tasks before this index). '
+             'Use with --prefix_path pointing to the saved prompts.npy from the previous run.',
+        default=0
     )
 
     main(parser.parse_args())
