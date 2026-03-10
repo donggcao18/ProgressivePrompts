@@ -5,14 +5,17 @@ from tqdm.auto import tqdm
 import logging, os, argparse
 from datetime import datetime
 
+from accelerate import Accelerator
 from t5_continual import T5ContinualLearner
 from utils import set_logger
 
 def main(args):
+    accelerator = Accelerator()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_path = os.path.join(args.save_dir, f"{args.save_name}_{timestamp}")
-    if not os.path.exists(save_path):
+    if accelerator.is_main_process and not os.path.exists(save_path):
         os.makedirs(save_path)
+    accelerator.wait_for_everyone()  # ensure dir exists before all processes proceed
     task_list = args.task_list
 
     model_name = args.model_name
@@ -34,14 +37,16 @@ def main(args):
                                            memory_perc=args.memory_perc,
                                            max_train=args.max_train,
                                            max_eval=args.max_eval,
-                                           max_test=args.max_test
+                                           max_test=args.max_test,
+                                           accelerator=accelerator,
                                            )
     
-    set_logger(os.path.join(save_path, 'logs'))
-    for key, value in vars(args).items():
-        logging.info(f"{key}: {value}")
-    if args.get_test_subset==0:
-        print("Not creating test subset")
+    if accelerator.is_main_process:
+        set_logger(os.path.join(save_path, 'logs'))
+        for key, value in vars(args).items():
+            logging.info(f"{key}: {value}")
+        if args.get_test_subset==0:
+            print("Not creating test subset")
 
     if args.multitask == 1:
         print('Multi task learning')
@@ -64,7 +69,9 @@ def main(args):
                                             test_eval_after_every_task=args.test_eval_after_every_task==1,
                                             data_replay_freq=args.data_replay_freq,
                                             start_task=args.start_task)
-        np.save(os.path.join(save_path, 'prompts.npy'), continual_learner.previous_prompts.detach().cpu().numpy())
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            np.save(os.path.join(save_path, 'prompts.npy'), continual_learner.previous_prompts.detach().cpu().numpy())
 
 
 if __name__ == "__main__":

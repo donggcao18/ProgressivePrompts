@@ -16,6 +16,7 @@ from transformers import AutoTokenizer, T5ForConditionalGeneration
 from sklearn.metrics import matthews_corrcoef, f1_score
 import logging
 from compute_metric import compute_smooth_bleu
+from accelerate import Accelerator
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,8 @@ class ResMLP(torch.nn.Module):
             )
 
         elif module_type=='transformer':
-            device = 'cuda'
-            self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dimension, nhead=2, dropout=0.05).to(device)
-            self.module = nn.TransformerEncoder(self.encoder_layer, num_layers=2).to(device)
+            self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dimension, nhead=2, dropout=0.05)
+            self.module = nn.TransformerEncoder(self.encoder_layer, num_layers=2)
 
         self.residual = residual
         if self.residual:
@@ -102,6 +102,7 @@ class T5ContinualLearner:
                  max_train=-1,
                  max_eval=-1,
                  max_test=-1,
+                 accelerator=None,
                  ):
         
         """Class for CL & prompt tuning experiments with T5 model.
@@ -165,10 +166,8 @@ class T5ContinualLearner:
         self.select_k_per_class = select_k_per_class
         self.early_stopping = early_stopping
 
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
+        self.accelerator = accelerator if accelerator is not None else Accelerator()
+        self.device = self.accelerator.device
 
         self.model_name = model_name 
         self.model = T5ForConditionalGeneration.from_pretrained(model_name)
@@ -192,10 +191,10 @@ class T5ContinualLearner:
                 print(f'Loaded previous_prompts shape: {self.previous_prompts.shape}  '
                       f'(num_prompt_tokens={self.previous_prompts.shape[0]}, emb_dim={self.previous_prompts.shape[1]})')
         
-        # Model to cuda
-        self.model.to(self.device) 
+        # Prepare model for distributed training (wraps in DDP for multi-GPU)
+        self.model = self.accelerator.prepare(self.model)
         # Create MLP (if prompt re-parameterization is requested)
-        self.get_MLP(prefix_MLP, bottleneck_size) # adds prompt MLP reparametrization (and puts to cuda)
+        self.get_MLP(prefix_MLP, bottleneck_size) # adds prompt MLP reparametrization (and puts to device)
 
         self.lr = lr
         self.weight_decay = weight_decay
@@ -205,15 +204,16 @@ class T5ContinualLearner:
                                             task=self.task_list[0],
                                             mlp_lr=mlp_lr,
                                             weight_decay_mlp=weight_decay_mlp)
+        self.optimizer = self.accelerator.prepare(self.optimizer)
         
         # Create best prompt/model copy for early stopping
         if self.early_stopping:
             if self.prefix_len>0:
                 # prompt tuning
-                self.best_prompt = self.model.prompt.detach().cpu().numpy()
+                self.best_prompt = self.accelerator.unwrap_model(self.model).prompt.detach().cpu().numpy()
             else:
-                # model tuning
-                self.best_model = deepcopy(self.model.state_dict()) # saving best model
+                # model tuning (use unwrapped state_dict to avoid DDP 'module.' prefix)
+                self.best_model = deepcopy(self.accelerator.unwrap_model(self.model).state_dict())
             self.best_acc = 0.0 # best avg accuracy on seen tasks
 
         # Get task -> data dictionary for CL training
@@ -229,15 +229,17 @@ class T5ContinualLearner:
                       task=None, mlp_lr=None, weight_decay_mlp=None): # task is used for MLP
 
         no_decay = ["bias", "LayerNorm.weight"]
+        # Use unwrapped model so named_parameters() reflects the original module hierarchy
+        raw_model = self.accelerator.unwrap_model(self.model)
         optimizer_grouped_parameters = [
             {
-                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "params": [p for n, p in raw_model.named_parameters() if not any(nd in n for nd in no_decay)],
                 "weight_decay": weight_decay,
                 "lr": lr,
             },
 
             {
-                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+                "params": [p for n, p in raw_model.named_parameters() if any(nd in n for nd in no_decay)],
                 "weight_decay": weight_decay,
                 "lr": lr,
             },
@@ -249,8 +251,9 @@ class T5ContinualLearner:
             if mlp_lr==None:
                 mlp_lr = lr
 
+            raw_mlp = self.accelerator.unwrap_model(self.prefix_MLPs[task])
             optimizer_grouped_parameters.append({
-                "params": [p for n, p in self.prefix_MLPs[task].named_parameters()],# if not any(nd in n for nd in no_decay)],
+                "params": [p for n, p in raw_mlp.named_parameters()],
                 "weight_decay": weight_decay_mlp,
                 "lr": mlp_lr,
             })
@@ -264,19 +267,19 @@ class T5ContinualLearner:
             self.prefix_MLPs = None
         else:
             print('Using MLP reparametrization with bottleneck = ', bottleneck_size)
-            N = self.model.encoder.embed_tokens.weight.shape[1]
+            N = self.accelerator.unwrap_model(self.model).encoder.embed_tokens.weight.shape[1]
             self.prefix_MLPs = {t: ResMLP(bottleneck_size=bottleneck_size,
                                           module_type=prefix_MLP,
                                           #layer_norm=layer_norm,
                                           emb_dimension=N) for t in self.task_list}
         if self.prefix_MLPs!=None:
             for t in self.task_list:
-                self.prefix_MLPs[t].to(self.device)
+                self.prefix_MLPs[t] = self.accelerator.prepare(self.prefix_MLPs[t])
 
     
     # Initialize new task prompt from random vocab. tokens
     def init_new_prompt(self, prompt_len):
-        model = self.model
+        model = self.accelerator.unwrap_model(self.model)
         N = model.encoder.embed_tokens.weight.shape[0]
         prompt_weigths = []
 
@@ -294,10 +297,12 @@ class T5ContinualLearner:
         if self.early_stopping: # use best val acc prompt & MLP
             new_prompt = self.best_prompt # prompt has already passed MLP
         else: # use last prompt
+            raw_model = self.accelerator.unwrap_model(self.model)
             if task!=None and self.prefix_MLPs!=None:
-                new_prompt = self.prefix_MLPs[task](self.model.prompt)
+                raw_mlp = self.accelerator.unwrap_model(self.prefix_MLPs[task])
+                new_prompt = raw_mlp(raw_model.prompt)
             else:
-                new_prompt = self.model.prompt
+                new_prompt = raw_model.prompt
             new_prompt = new_prompt.detach().cpu().numpy()
 
         new_prompt = torch.tensor(new_prompt, requires_grad = False).to(self.device)
@@ -308,27 +313,29 @@ class T5ContinualLearner:
     # Update best prompt/model based on val. score
     def update_best_model(self, acc, task=None):
         if acc>self.best_acc:
+            raw_model = self.accelerator.unwrap_model(self.model)
             # getting best prompt
             if self.prefix_len>0:
-                best_prompt = self.model.prompt
+                best_prompt = raw_model.prompt
                 if self.prefix_MLPs!=None:
-                    self.prefix_MLPs[task].eval()
-                    best_prompt = self.prefix_MLPs[task](best_prompt)
+                    raw_mlp = self.accelerator.unwrap_model(self.prefix_MLPs[task])
+                    raw_mlp.eval()
+                    best_prompt = raw_mlp(best_prompt)
 
                 self.best_prompt = best_prompt.detach().cpu().numpy()
 
-            # getting best model
+            # getting best model (use unwrapped state_dict to avoid 'module.' prefix)
             else:
-                self.best_model = deepcopy(self.model.state_dict()) # saving best model
+                self.best_model = deepcopy(raw_model.state_dict())
             self.best_acc = acc # best avg accuracy on seen tasks
 
 
     # Restrieve best-performing model (for early stopping)
     def restore_best_model(self):
+        raw_model = self.accelerator.unwrap_model(self.model)
         if self.prefix_len>0:
-            self.model.prompt = nn.Parameter(torch.tensor(self.best_prompt,
-                                                          requires_grad=True))
-            self.model.to(self.device)
+            raw_model.prompt = nn.Parameter(torch.tensor(self.best_prompt,
+                                                         requires_grad=True).to(self.device))
             # CHECK FUNCTIONALITY FOR RESIDUAL PROMPTS
             # self.optimizer = self.get_optimizer(self.lr, self.weight_decay,
             #                                     task=None,
@@ -336,7 +343,7 @@ class T5ContinualLearner:
             #                                     weight_decay_mlp=None)
             print("restored best prompt")
         else:
-            self.model.load_state_dict(deepcopy(self.best_model))
+            raw_model.load_state_dict(deepcopy(self.best_model))
             print("restored best model")
 
             
@@ -367,13 +374,16 @@ class T5ContinualLearner:
             dataloader_train = ds2.get_final_ds(**data_params, 
                                                 k=k, 
                                                 split='train')
+            # Prepare training dataloader for distributed sampling across GPUs
+            dataloader_train = self.accelerator.prepare(dataloader_train)
             tasks_data_dict[task]['train'] = dataloader_train
 
             if memory_perc > 0:
-                k_mem = max(1, int(len(dataloader_train) * self.batch_size * memory_perc))
+                k_mem = max(1, int(len(dataloader_train.dataset) * memory_perc))
                 dataloader_mem = ds2.get_final_ds(**data_params, 
                                                   k=k_mem, 
                                                   split='train')
+                dataloader_mem = self.accelerator.prepare(dataloader_mem)
                 tasks_data_dict[task]['train_mem'] = dataloader_mem
 
             if self.get_test_subset:
@@ -405,6 +415,8 @@ class T5ContinualLearner:
                           progressive=True):
         prefix_len = self.prefix_len
         model = self.model
+        # Unwrap DDP to access inner attributes (encoder, prompt, etc.)
+        raw_model = self.accelerator.unwrap_model(model)
         embed_prompt = self.prefix_MLPs!=None
         if embed_prompt:
             assert task!=None
@@ -415,13 +427,14 @@ class T5ContinualLearner:
         lm_labels = batch["target_ids"]
         lm_labels[lm_labels[:, :] == tokenizer.pad_token_id] = -100
 
-        inputs_embeds = model.encoder.embed_tokens(batch["source_ids"])
+        inputs_embeds = raw_model.encoder.embed_tokens(batch["source_ids"])
 
         k = inputs_embeds.shape[0]
         if embed_prompt:
-            prompt = mlp(model.prompt)
+            raw_mlp = self.accelerator.unwrap_model(mlp)
+            prompt = raw_mlp(raw_model.prompt)
         else:
-            prompt = model.prompt
+            prompt = raw_model.prompt
 
         if progressive:
             inputs_embeds = torch.concat([prompt.repeat(k, 1, 1),
@@ -437,7 +450,7 @@ class T5ContinualLearner:
                                              batch["source_mask"]), 
                                              axis=1)[:,:self.seq_len]
 
-        encoder_outputs = model.encoder(
+        encoder_outputs = raw_model.encoder(
                                 attention_mask=source_mask_updated,
                                 inputs_embeds=inputs_embeds,
                                 head_mask=None,  
@@ -446,6 +459,7 @@ class T5ContinualLearner:
                                 return_dict=None,  
                             )
 
+        # Use DDP-wrapped model for forward pass so gradients are synced across GPUs
         outputs = model(
             #input_ids=batch["source_ids"],
             attention_mask=source_mask_updated, 
@@ -462,27 +476,24 @@ class T5ContinualLearner:
     # Full finetuning   
     def train_step(self, batch):
         model = self.model
+        raw_model = self.accelerator.unwrap_model(model)
         tokenizer = self.tokenizer
 
         batch = {k: batch[k].to(self.device) for k in batch}
         lm_labels = batch["target_ids"]
         lm_labels[lm_labels[:, :] == tokenizer.pad_token_id] = -100
 
-        inputs_embeds = model.encoder.embed_tokens(batch["source_ids"])
-        encoder_outputs = model.encoder(
-                                #input_ids=batch["source_ids"],
+        inputs_embeds = raw_model.encoder.embed_tokens(batch["source_ids"])
+        encoder_outputs = raw_model.encoder(
                                 attention_mask=batch["source_mask"],
-                                #labels=lm_labels,
-                                #decoder_attention_mask=batch['target_mask']
-                                #input_ids=input_ids,
-                                #attention_mask=attention_mask,
                                 inputs_embeds=inputs_embeds,
-                                head_mask=None, #head_mask,
-                                output_attentions=None, #output_attentions,
-                                output_hidden_states=None, #output_hidden_states,
-                                return_dict=None, #return_dict,
+                                head_mask=None,
+                                output_attentions=None,
+                                output_hidden_states=None,
+                                return_dict=None,
                             )
 
+        # DDP-wrapped forward for gradient sync
         outputs = model(
             input_ids=batch["source_ids"],
             attention_mask=batch["source_mask"],
@@ -612,11 +623,13 @@ class T5ContinualLearner:
         Example validate function that calculates BLEU for T5 code generation.
         """
         model = self.model
+        # Unwrap DDP to access encoder attributes and generate (not supported in DDP)
+        raw_model = self.accelerator.unwrap_model(model)
         tokenizer = self.tokenizer
-        model.eval()
+        raw_model.eval()
 
-        # Open log file for writing predictions
-        if log_file is not None:
+        # Open log file for writing predictions (main process only)
+        if log_file is not None and self.accelerator.is_main_process:
             log_fh = open(log_file, 'a', encoding='utf-8')
         else:
             log_fh = None
@@ -625,11 +638,12 @@ class T5ContinualLearner:
         reference_corpus = []   # shape: [ [ [ref_tokens], [ref_tokens2], ... ], ... ]
         translation_corpus = [] # shape: [ [pred_tokens], [pred_tokens], ... ]
 
-        for i, batch in enumerate(tqdm(dataloader_val)):
+        for i, batch in enumerate(tqdm(dataloader_val,
+                                       disable=not self.accelerator.is_main_process)):
 
             batch = {k: batch[k].to(self.device) for k in batch}
 
-            inputs_embeds = model.encoder.embed_tokens(batch["source_ids"]).to(self.device)
+            inputs_embeds = raw_model.encoder.embed_tokens(batch["source_ids"])
 
             if prompt is not None:
                 batch_size = inputs_embeds.shape[0]
@@ -648,7 +662,7 @@ class T5ContinualLearner:
             else:
                 source_mask_updated = batch["source_mask"]
 
-            encoder_outputs = model.encoder(
+            encoder_outputs = raw_model.encoder(
                 attention_mask=source_mask_updated,
                 inputs_embeds=inputs_embeds,
                 head_mask=None,
@@ -668,7 +682,8 @@ class T5ContinualLearner:
             else:
                 max_target_length = 256
             
-            outs = model.generate(
+            # generate() must be called on the unwrapped model (DDP wrapper doesn't expose it)
+            outs = raw_model.generate(
                 input_ids=None,
                 #input_ids=batch["source_ids"],
                 repetition_penalty=1.2,
@@ -783,7 +798,7 @@ class T5ContinualLearner:
                                               progressive=progressive)
             else:
                 loss = self.train_step(b)
-            loss.backward()
+            self.accelerator.backward(loss)
             self.optimizer.step()
             self.optimizer.zero_grad()
 
@@ -814,13 +829,14 @@ class T5ContinualLearner:
             self.freeze_unfreeze_mlps([task], requires_grad=True) # unfreezing current task
 
         model = self.model
+        raw_model = self.accelerator.unwrap_model(model)
 
         with torch.no_grad():
-            model.prompt = nn.Parameter(torch.tensor(self.init_new_prompt(self.prefix_len),
-                                        requires_grad=True))
+            raw_model.prompt = nn.Parameter(torch.tensor(self.init_new_prompt(self.prefix_len),
+                                            requires_grad=True).to(self.device))
             self.optimizer = self.get_optimizer(self.lr, self.weight_decay,
                                                 task=task)
-        model.to(self.device)
+            self.optimizer = self.accelerator.prepare(self.optimizer)
         dataloader_train = self.tasks_data_dict[task]['train']
         dataloader_val = self.tasks_data_dict[task]['val']
 
@@ -837,8 +853,9 @@ class T5ContinualLearner:
 
 
             log_every = 500  # log train loss every N steps
-            for i, batch in enumerate(tqdm(dataloader_train)):
-                batch = {k:batch[k].to('cuda') for k in batch}
+            for i, batch in enumerate(tqdm(dataloader_train,
+                                           disable=not self.accelerator.is_main_process)):
+                batch = {k: batch[k].to(self.device) for k in batch}
 
                 if self.prefix_len>0: # prompt tuning
                     loss = self.train_step_lester(batch,
@@ -847,7 +864,7 @@ class T5ContinualLearner:
                 else:
                     loss = self.train_step(batch)
 
-                loss.backward()
+                self.accelerator.backward(loss)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
@@ -863,11 +880,12 @@ class T5ContinualLearner:
                     if param.requires_grad:
                         logger.info(f"Trainable parameter: {name}m shape: {param.shape}")
             if self.prefix_MLPs!=None:
-                mlp.eval()
-                prompt = mlp(model.prompt)
+                raw_mlp = self.accelerator.unwrap_model(mlp)
+                raw_mlp.eval()
+                prompt = raw_mlp(raw_model.prompt)
             else:
                 if self.prefix_len>0:
-                    prompt = model.prompt
+                    prompt = raw_model.prompt
                     print(prompt.shape)
                 else:
                     prompt = None
@@ -955,16 +973,18 @@ class T5ContinualLearner:
             # Save progressive prompts checkpoint after each task so training can be
             # resumed with --prefix_path if the run is interrupted later.
             if progressive and save_path:
-                ckpt_path = os.path.join(save_path, f'prompts_after_task{num}_{task}.npy')
-                np.save(ckpt_path, self.previous_prompts.detach().cpu().numpy())
-                print(f'Saved progressive prompts checkpoint -> {ckpt_path}  shape: {self.previous_prompts.shape}')
+                self.accelerator.wait_for_everyone()
+                if self.accelerator.is_main_process:
+                    ckpt_path = os.path.join(save_path, f'prompts_after_task{num}_{task}.npy')
+                    np.save(ckpt_path, self.previous_prompts.detach().cpu().numpy())
+                    print(f'Saved progressive prompts checkpoint -> {ckpt_path}  shape: {self.previous_prompts.shape}')
 
             if progressive:
                 curr_prompt = torch.tensor(self.previous_prompts,
                                                requires_grad=False).to(self.device)
             else:
                 if self.prefix_len>0:
-                        curr_prompt = self.model.prompt
+                        curr_prompt = self.accelerator.unwrap_model(self.model).prompt
                 else:
                         curr_prompt = None
 
@@ -1024,12 +1044,9 @@ class T5ContinualLearner:
                     else:
                         loss = self.train_step(batch)
 
-                    # loss.backward()
-                    # self.optimizer.step()
-                    # self.optimizer.zero_grad()
                     loss_combined += loss
 
-                loss_combined.backward()
+                self.accelerator.backward(loss_combined)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 pbar.update(1)

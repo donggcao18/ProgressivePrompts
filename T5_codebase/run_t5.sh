@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Run run_t5.py with all default values
-python3 train_t5_cl.py \
+# Run distributed training on 2 A100 GPUs using accelerate
+accelerate launch --config_file accelerate_config.yaml train_t5_cl.py \
     --save_dir data \
     --save_name t5_continual \
     --task_list CONCODE CodeTrans CodeSearchNet BFP \
