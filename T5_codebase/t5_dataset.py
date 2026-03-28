@@ -1,9 +1,14 @@
 import os
 import pandas as pd
 import numpy as np
+import hashlib
+
+from typing import Dict
 
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, concatenate_datasets
+
+from task_info import TASK_SPECS, HF_SPLIT_MAP, INSTRUCTION_POOL, TRAIN_ONLY_TASKS, TASK_LIST, INSTRUCTION_SPLIT_POLICY
 
 """
 (check) find official dataset and their exact collumn name
@@ -19,67 +24,46 @@ class T5Dataset:
         
         self.tokenizer = tokenizer
         self.task = task
-        self.task_list = ['CodeTrans',
+        self.task_list = ['CodeTrans', 
                         'CodeSearchNet',
-                        'BFP',
+                        'BFP', 
                         'CONCODE',
+                        'TheVault_Csharp',
                         'KodCode',
                         'RunBugRun',
-                        'CoST',
-                        'TheVault_Csharp']
+                        'CoST']
         
         self.text_key = {'CONCODE': 'nl',
                            'CodeTrans': 'java',
-                           'CodeSearchNet': 'code',
+                           'CodeSearchNet': 'code',   
                            'BFP': 'buggy',
-                           'KodCode': 'question',
+                           'TheVault_Csharp': 'code',      
+                           'KodCode': 'question',           
                            'RunBugRun': 'buggy_code',
-                           'CoST': 'lang1',
-                           'TheVault_Csharp': 'code'}
+                           'CoST': 'lang1'}               
         self.label_key = {'CONCODE': 'code',
                             'CodeTrans': 'cs',
                             'CodeSearchNet': 'docstring',
                             'BFP': 'fixed',
-                            'KodCode': 'solution',
+                            'TheVault_Csharp': 'docstring',    
+                            'KodCode': 'solution',                
                             'RunBugRun': 'fixed_code',
-                            'CoST': 'lang2',
-                            'TheVault_Csharp': 'docstring'}
-        self.task_instructions = {
-                                'CONCODE': 'Generate Java code from the following English description: ',
-                                'CodeTrans': 'Translate the following Java code into C#: ',
-                                'CodeSearchNet': 'Summarize the following Ruby code into English: ',
-                                'BFP': 'Refactor or improve the following Java code: ',
-                                'KodCode': 'Generate Python code from the following description: ',
-                                'RunBugRun': 'Refactor or improve the following Ruby code: ',
-                                'CoST': 'Translate the following C++ code into C#: ',
-                                'TheVault_Csharp': 'Summarize the following C# code into English: '}
+                            'CoST': 'lang2'}              
         
         self.max_input_length = {'CodeTrans': 320,
                                  'CodeSearchNet': 256,
                                  'BFP': 130,
                                  'CONCODE': 320,
-                                 'KodCode': 256,
+                                 'TheVault_Csharp': 256,        # TODO: update if needed
+                                 'KodCode': 256,                 # TODO: update if needed
                                  'RunBugRun': 256,
-                                 'CoST': 320,
-                                 'TheVault_Csharp': 256}
+                                 'CoST': 256}               # TODO: update if needed
 
         self.train_only_tasks = {
             'KodCode': {'val': 5000, 'test': 5000},
             'RunBugRun': {'val': 972,  'test': 1000},
         }
 
-
-    @staticmethod
-    def _extract_first_paragraph(docstring):
-        """Clean docstring: flatten lists, strip newlines, normalise whitespace."""
-        if docstring is None:
-            return ""
-        if isinstance(docstring, (list, tuple)):
-            s = " ".join(str(t) for t in docstring)
-        else:
-            s = str(docstring)
-        s = s.replace("\n", " ")
-        return " ".join(s.strip().split())
 
     def _split_train_only(self, dataset, task, split, split_seed=42):
 
@@ -108,12 +92,58 @@ class T5Dataset:
         idx_total = np.random.choice(np.arange(ds.shape[0]), num_samples, replace=False)
         return ds.select(idx_total)
 
+    @staticmethod
+    def _to_string(value):
+        if value is None:
+            return ""
+        return str(value)
+
+    def _get_candidate_instruction_pool(self, task, split_name):
+        task_type = TASK_SPECS[task]['task_type']
+        pool = INSTRUCTION_POOL.get(task_type, [])
+        if not pool:
+            raise ValueError(f"No instruction templates defined for task_type '{task_type}'")
+
+        policy = INSTRUCTION_SPLIT_POLICY.get(split_name, INSTRUCTION_SPLIT_POLICY['train'])
+        if policy['pool_scope'] == 'full':
+            return pool
+
+        if policy['pool_scope'] == 'head_fraction':
+            fraction = float(policy.get('fraction', 0.75))
+            if fraction <= 0:
+                raise ValueError(f"Invalid fraction {fraction} for split '{split_name}'")
+            head_size = max(1, int(len(pool) * fraction))
+            return pool[:head_size]
+
+        raise ValueError(f"Unknown pool_scope '{policy['pool_scope']}' for split '{split_name}'")
+
+    def _select_instruction_template(self, task, sample_key, split_name, split_seed):
+        candidate_pool = self._get_candidate_instruction_pool(task, split_name)
+        random_key = f"{split_seed}::{split_name}::{sample_key}"
+        idx = int(hashlib.md5(random_key.encode("utf-8")).hexdigest(), 16) % len(candidate_pool)
+        return candidate_pool[idx]
+
+    def _render_instruction(self, task, raw_input, sample_key, split_name, split_seed):
+        spec = TASK_SPECS[task]
+        template = self._select_instruction_template(task, sample_key, split_name, split_seed)
+
+        format_values: Dict[str, str] = {
+            'language': spec.get('language', 'code'),
+            'description': raw_input,
+            'code': raw_input,
+            'source_lang': spec.get('source_lang', spec.get('language', 'source language')),
+            'target_lang': spec.get('target_lang', 'target language'),
+        }
+        return template.format(**format_values)
+
     # Function to preprocess raw input & label text into tokenized dictionary
     def preprocess_function(self, 
                             examples, 
                             task,
                             max_length=512,
                             max_input_length=None,
+                            split_name='train',
+                            split_seed=42,
                             #batched=False
                             ):
         if task not in self.task_list:
@@ -121,12 +151,18 @@ class T5Dataset:
         tokenizer = self.tokenizer
         text_key = self.text_key[task]
         label_key = self.label_key[task]
-        
-        instruction = self.task_instructions[task]
-        text = examples[text_key]
-        
-        text = instruction + \
-               text + ' </s>' 
+
+        raw_input = self._to_string(examples[text_key])
+        sample_uid = hashlib.md5((task + "||" + raw_input).encode("utf-8")).hexdigest()
+        instruction = self._render_instruction(
+            task=task,
+            raw_input=raw_input,
+            sample_key=f"{task}::{sample_uid}",
+            split_name=split_name,
+            split_seed=split_seed,
+        )
+
+        text = instruction + ' </s>' 
     
         # text = text + ' </s>' 
 
@@ -137,13 +173,8 @@ class T5Dataset:
                             max_length=src_max_length,
                             return_tensors="pt")
 
-        target_text = examples[label_key]
-        # Clean docstrings for summarisation tasks to remove noise
-        if task in ('CodeSearchNet'):
-            target_text = self._extract_first_paragraph(target_text)
-        if not isinstance(target_text, str):
-            target_text = str(target_text) if target_text is not None else ""
-        target_text += ' </s>'
+        target_text = self._to_string(examples[label_key])
+        target_text += ' </s>'  
         target = tokenizer(target_text,
                             padding="max_length",
                             truncation=True,
@@ -188,27 +219,18 @@ class T5Dataset:
             dataset = load_dataset('semeru/code-text-ruby', split=split)
         elif task == 'BFP':
             dataset = load_dataset('ayeshgk/code_x_glue_cc_code_refinement_annotated', split=split)
-        elif task == 'CoST':
-            dataset = load_dataset('dongg18/CoST', split=split)
+        elif task == 'TheVault_Csharp':
+            if split == 'train':
+                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="/data/theVault", languages=["c_sharp"], split_set="train/small")
+            else:    
+                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="/data/theVault", languages=["c_sharp"], split_set=split)
         elif task == 'KodCode':
             dataset = load_dataset('KodCode/KodCode-V1-SFT-R1', split='train')
         elif task == 'RunBugRun':
             dataset = load_dataset('ASSERT-KTH/RunBugRun-Final', split='train')
             dataset = dataset.filter(lambda example: example["language"] == "ruby")
-        elif task == 'TheVault_Csharp':
-            _vault_split_map = {
-                'train': ['train/small'],
-                'validation': ['validation'],
-                'test': ['test'],
-            }
-            _cache_dir = os.path.join(os.path.dirname(__file__), 'dataset', 'theVault')
-            dataset_dict = load_dataset(
-                'Fsoft-AIC/the-vault-function',
-                cache_dir=_cache_dir,
-                languages=['c#'],
-                split_set=_vault_split_map[split],
-            )
-            dataset = concatenate_datasets(list(dataset_dict.values()))
+        elif task == 'CoST':
+            dataset = load_dataset('dongg18/CoST', split=split)
 
 
 
@@ -231,6 +253,8 @@ class T5Dataset:
                                                                             task,
                                                                             max_length=max_length,
                                                                             max_input_length=task_max_input_length,
+                                                                            split_name=split,
+                                                                            split_seed=seed,
                                                                             ),
                                                                             batched=False,
                                                                             )
