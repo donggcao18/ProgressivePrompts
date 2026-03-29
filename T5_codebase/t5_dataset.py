@@ -6,7 +6,7 @@ import hashlib
 from typing import Dict
 
 from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, concatenate_datasets, DatasetDict
 
 from task_info import TASK_SPECS, HF_SPLIT_MAP, INSTRUCTION_POOL, TRAIN_ONLY_TASKS, TASK_LIST, INSTRUCTION_SPLIT_POLICY
 
@@ -88,9 +88,21 @@ class T5Dataset:
 
     def select_subset_ds(self, ds, k=2000, seed=0):
         np.random.seed(seed)
-        num_samples = min(k, ds.shape[0])
-        idx_total = np.random.choice(np.arange(ds.shape[0]), num_samples, replace=False)
+        total_samples = len(ds)
+        num_samples = min(k, total_samples)
+        idx_total = np.random.choice(np.arange(total_samples), num_samples, replace=False)
         return ds.select(idx_total)
+
+    @staticmethod
+    def _unwrap_single_split_dataset(dataset, split_name):
+        if isinstance(dataset, DatasetDict):
+            if split_name in dataset:
+                return dataset[split_name]
+            if len(dataset) == 1:
+                return next(iter(dataset.values()))
+            available = list(dataset.keys())
+            raise ValueError(f"Expected a single split dataset for '{split_name}', got splits: {available}")
+        return dataset
 
     @staticmethod
     def _to_string(value):
@@ -231,6 +243,8 @@ class T5Dataset:
             dataset = dataset.filter(lambda example: example["language"] == "ruby")
         elif task == 'CoST':
             dataset = load_dataset('dongg18/CoST', split=split)
+
+        dataset = self._unwrap_single_split_dataset(dataset, split)
 
 
 
