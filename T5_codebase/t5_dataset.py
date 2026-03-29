@@ -221,9 +221,9 @@ class T5Dataset:
             dataset = load_dataset('ayeshgk/code_x_glue_cc_code_refinement_annotated', split=split)
         elif task == 'TheVault_Csharp':
             if split == 'train':
-                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="/dataset/theVault", languages=["c#"], split_set=["train/small"])
+                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="dataset/theVault", languages=["c#"], split_set=["train/small"])
             else:    
-                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="/dataset/theVault", languages=["c#"], split_set=[split])
+                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="dataset/theVault", languages=["c#"], split_set=[split])
         elif task == 'KodCode':
             dataset = load_dataset('KodCode/KodCode-V1-SFT-R1', split='train')
         elif task == 'RunBugRun':
