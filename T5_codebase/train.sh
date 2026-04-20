@@ -28,9 +28,9 @@ accelerate launch --config_file accelerate_config.yaml train_t5_cl.py \
     --data_replay_freq -1 \
     --multitask 0 \
     --test_eval_after_every_task 1 \
-    --max_train 100000 \
-    --max_eval 1000 \
-    --max_test 5000 \
+    --max_train 10 \
+    --max_eval 10 \
+    --max_test 50 \
     --prefix_len 50 \
     --start_task 0 
 
