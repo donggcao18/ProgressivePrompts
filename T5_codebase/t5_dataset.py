@@ -1,97 +1,66 @@
-import os
-import pandas as pd
+from typing import Any, Dict, List, Optional
+
 import numpy as np
-import hashlib
+import torch
+from datasets import DatasetDict, load_dataset
+from torch.utils.data import DataLoader
+from transformers import DataCollatorForSeq2Seq
 
-from typing import Dict
+from task_info import HF_SPLIT_MAP, TASK_LIST
 
-from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset, concatenate_datasets, DatasetDict
 
-from task_info import TASK_SPECS, HF_SPLIT_MAP, INSTRUCTION_POOL, TRAIN_ONLY_TASKS, TASK_LIST, INSTRUCTION_SPLIT_POLICY
+class Seq2SeqDataset:
+    """Minimal dataset helper: load from Hugging Face + collate."""
 
-"""
-(check) find official dataset and their exact collumn name
-""" 
-class T5Dataset:
-    def __init__(self, tokenizer, task):
-        """
-        Dataset class for T5 model experiments.
-        Args:
-            task (str): Name of the downstream task.
-            tokenizer (HuggingFace Tokenizer): T5 model tokenizer to use.
-        """
-        
+    max_input_length = {
+        "CodeTrans": 320,
+        "CodeSearchNet": 256,
+        "BFP": 130,
+        "CONCODE": 320,
+        "TheVault_Csharp": 256,
+        "KodCode": 512,
+        "RunBugRun": 256,
+        "CoST": 256,
+    }
+    max_target_length = {
+        "CodeTrans": 256,
+        "CodeSearchNet": 128,
+        "BFP": 120,
+        "CONCODE": 150,
+        "TheVault_Csharp": 128,
+        "KodCode": 300,
+        "RunBugRun": 128,
+        "CoST": 128,
+    }
+
+    def __init__(self, tokenizer, hf_dataset_id: str = "dongg18/CODETASK_with_instruction_pool"):
         self.tokenizer = tokenizer
-        self.task = task
-        self.task_list = ['CodeTrans', 
-                        'CodeSearchNet',
-                        'BFP', 
-                        'CONCODE',
-                        'TheVault_Csharp',
-                        'KodCode',
-                        'RunBugRun',
-                        'CoST']
-        
-        self.text_key = {'CONCODE': 'nl',
-                           'CodeTrans': 'java',
-                           'CodeSearchNet': 'code',   
-                           'BFP': 'buggy',
-                           'TheVault_Csharp': 'code',      
-                           'KodCode': 'question',           
-                           'RunBugRun': 'buggy_code',
-                           'CoST': 'lang1'}               
-        self.label_key = {'CONCODE': 'code',
-                            'CodeTrans': 'cs',
-                            'CodeSearchNet': 'docstring',
-                            'BFP': 'fixed',
-                            'TheVault_Csharp': 'docstring',    
-                            'KodCode': 'solution',                
-                            'RunBugRun': 'fixed_code',
-                            'CoST': 'lang2'}              
-        
-        self.max_input_length = {'CodeTrans': 320,
-                                 'CodeSearchNet': 256,
-                                 'BFP': 130,
-                                 'CONCODE': 320,
-                                 'TheVault_Csharp': 256,        # TODO: update if needed
-                                 'KodCode': 256,                 # TODO: update if needed
-                                 'RunBugRun': 256,
-                                 'CoST': 256}               # TODO: update if needed
+        self.hf_dataset_id = hf_dataset_id
+        self.task_list = list(TASK_LIST)
 
-        self.train_only_tasks = {
-            'KodCode': {'val': 5000, 'test': 5000},
-            'RunBugRun': {'val': 972,  'test': 1000},
-        }
+        self._active_task: Optional[str] = None
+        self._active_input_max_len: int = 512
+        self._active_target_max_len: int = 128
 
+        self._data_collator = DataCollatorForSeq2Seq(
+            tokenizer=self.tokenizer,
+            model=None,
+            label_pad_token_id=-100,
+            return_tensors="pt",
+        )
 
-    def _split_train_only(self, dataset, task, split, split_seed=42):
+    @staticmethod
+    def _canonical_split(split: str) -> str:
+        return HF_SPLIT_MAP.get(split, split)
 
-        sizes = self.train_only_tasks[task]
-        test_size  = sizes['test']
-        val_size   = sizes['val']
-
-        # Step 1: carve out test from the full dataset
-        tmp = dataset.train_test_split(test_size=test_size, seed=split_seed)
-        test_ds = tmp['test']
-
-        # Step 2: carve out val from the remainder (test never included)
-        tmp2 = tmp['train'].train_test_split(test_size=val_size, seed=split_seed)
-        train_ds = tmp2['train']
-        val_ds   = tmp2['test']
-
-        mapping = {'train': train_ds, 'validation': val_ds, 'test': test_ds}
-        if split not in mapping:
-            raise ValueError(f"Unknown split '{split}' for train-only task '{task}'")
-        return mapping[split]
-
-
-    def select_subset_ds(self, ds, k=2000, seed=0):
-        np.random.seed(seed)
-        total_samples = len(ds)
-        num_samples = min(k, total_samples)
-        idx_total = np.random.choice(np.arange(total_samples), num_samples, replace=False)
-        return ds.select(idx_total)
+    @staticmethod
+    def _candidate_splits(split: str) -> List[str]:
+        canonical = HF_SPLIT_MAP.get(split, split)
+        if canonical == "validation":
+            return ["validation", "val", "dev"]
+        if canonical == "test":
+            return ["test", "eval"]
+        return [canonical]
 
     @staticmethod
     def _unwrap_single_split_dataset(dataset, split_name):
@@ -101,178 +70,198 @@ class T5Dataset:
             if len(dataset) == 1:
                 return next(iter(dataset.values()))
             available = list(dataset.keys())
-            raise ValueError(f"Expected a single split dataset for '{split_name}', got splits: {available}")
+            raise ValueError(
+                f"Expected split '{split_name}' but got dataset dict with splits: {available}"
+            )
         return dataset
 
-    @staticmethod
-    def _to_string(value):
-        if value is None:
-            return ""
-        return str(value)
+    def _load_task_split(self, task: str, split: str):
+        errors: List[str] = []
+        for candidate in self._candidate_splits(split):
+            try:
+                dataset = load_dataset(self.hf_dataset_id, task, split=candidate)
+                return self._unwrap_single_split_dataset(dataset, candidate), candidate
+            except Exception as exc:
+                errors.append(f"split={candidate}: {exc}")
 
-    def _get_candidate_instruction_pool(self, task, split_name):
-        task_type = TASK_SPECS[task]['task_type']
-        pool = INSTRUCTION_POOL.get(task_type, [])
-        if not pool:
-            raise ValueError(f"No instruction templates defined for task_type '{task_type}'")
+        try:
+            dataset_dict = load_dataset(self.hf_dataset_id, task)
+            if isinstance(dataset_dict, DatasetDict):
+                for candidate in self._candidate_splits(split):
+                    if candidate in dataset_dict:
+                        return dataset_dict[candidate], candidate
+                available = list(dataset_dict.keys())
+                raise ValueError(
+                    f"Could not find split '{split}' for task '{task}' in '{self.hf_dataset_id}'. "
+                    f"Available splits: {available}"
+                )
+            return dataset_dict, split
+        except Exception as exc:
+            details = "\n".join(errors[-3:])
+            raise ValueError(
+                f"Failed to load task '{task}' from '{self.hf_dataset_id}' for split '{split}'.\n"
+                f"Recent attempts:\n{details}\n"
+                f"Fallback error: {exc}"
+            ) from exc
 
-        policy = INSTRUCTION_SPLIT_POLICY.get(split_name, INSTRUCTION_SPLIT_POLICY['train'])
-        if policy['pool_scope'] == 'full':
-            return pool
+    def select_subset_ds(self, ds, k: int = 2000, seed: int = 0):
+        np.random.seed(seed)
+        total = len(ds)
+        if total == 0:
+            return ds
+        num_samples = min(k, total)
+        idx_total = np.random.choice(np.arange(total), num_samples, replace=False)
+        return ds.select(idx_total)
 
-        if policy['pool_scope'] == 'head_fraction':
-            fraction = float(policy.get('fraction', 0.75))
-            if fraction <= 0:
-                raise ValueError(f"Invalid fraction {fraction} for split '{split_name}'")
-            head_size = max(1, int(len(pool) * fraction))
-            return pool[:head_size]
+    def _ensure_tokenized_feature(self, ex: Dict[str, Any]) -> Dict[str, Any]:
+        if "input_ids" in ex:
+            feature = {
+                "input_ids": ex["input_ids"],
+                "attention_mask": ex.get("attention_mask"),
+            }
+            if "labels" in ex:
+                feature["labels"] = ex["labels"]
+            elif "target_ids" in ex:
+                feature["labels"] = ex["target_ids"]
+            return feature
 
-        raise ValueError(f"Unknown pool_scope '{policy['pool_scope']}' for split '{split_name}'")
+        if "source_ids" in ex:
+            feature = {
+                "input_ids": ex["source_ids"],
+                "attention_mask": ex.get("source_mask"),
+            }
+            if "labels" in ex:
+                feature["labels"] = ex["labels"]
+            elif "target_ids" in ex:
+                feature["labels"] = ex["target_ids"]
+            return feature
 
-    def _select_instruction_template(self, task, sample_key, split_name, split_seed):
-        candidate_pool = self._get_candidate_instruction_pool(task, split_name)
-        random_key = f"{split_seed}::{split_name}::{sample_key}"
-        idx = int(hashlib.md5(random_key.encode("utf-8")).hexdigest(), 16) % len(candidate_pool)
-        return candidate_pool[idx]
+        if "input" in ex and "output" in ex:
+            src = "" if ex["input"] is None else str(ex["input"])
+            tgt = "" if ex["output"] is None else str(ex["output"])
 
-    def _render_instruction(self, task, raw_input, sample_key, split_name, split_seed):
-        spec = TASK_SPECS[task]
-        template = self._select_instruction_template(task, sample_key, split_name, split_seed)
+            source = self.tokenizer(
+                src,
+                truncation=True,
+                max_length=self._active_input_max_len,
+                padding=False,
+            )
+            target = self.tokenizer(
+                text_target=tgt,
+                truncation=True,
+                max_length=self._active_target_max_len,
+                padding=False,
+            )
+            return {
+                "input_ids": source["input_ids"],
+                "attention_mask": source["attention_mask"],
+                "labels": target["input_ids"],
+            }
 
-        format_values: Dict[str, str] = {
-            'language': spec.get('language', 'code'),
-            'description': raw_input,
-            'code': raw_input,
-            'source_lang': spec.get('source_lang', spec.get('language', 'source language')),
-            'target_lang': spec.get('target_lang', 'target language'),
-        }
-        return template.format(**format_values)
-
-    # Function to preprocess raw input & label text into tokenized dictionary
-    def preprocess_function(self, 
-                            examples, 
-                            task,
-                            max_length=512,
-                            max_input_length=None,
-                            split_name='train',
-                            split_seed=42,
-                            #batched=False
-                            ):
-        if task not in self.task_list:
-            raise ValueError(f"Unknown task name: {task}")
-        tokenizer = self.tokenizer
-        text_key = self.text_key[task]
-        label_key = self.label_key[task]
-
-        raw_input = self._to_string(examples[text_key])
-        sample_uid = hashlib.md5((task + "||" + raw_input).encode("utf-8")).hexdigest()
-        instruction = self._render_instruction(
-            task=task,
-            raw_input=raw_input,
-            sample_key=f"{task}::{sample_uid}",
-            split_name=split_name,
-            split_seed=split_seed,
+        raise ValueError(
+            "Each dataset item must contain one of: "
+            "(input_ids, labels) or (source_ids, target_ids) or (input, output)."
         )
 
-        text = instruction + ' </s>' 
-    
-        # text = text + ' </s>' 
+    def _add_legacy_keys(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        batch["source_ids"] = batch["input_ids"]
+        if "attention_mask" in batch:
+            batch["source_mask"] = batch["attention_mask"]
+        else:
+            batch["source_mask"] = torch.ones_like(batch["input_ids"], dtype=torch.long)
 
-        src_max_length = max_input_length if max_input_length is not None else max_length
-        source = tokenizer(text,
-                            padding="max_length",
-                            truncation=True,
-                            max_length=src_max_length,
-                            return_tensors="pt")
+        if "labels" in batch:
+            target_ids = batch["labels"].clone()
+            pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            target_ids[target_ids == -100] = pad_id
+            batch["target_ids"] = target_ids
+            batch["target_mask"] = (target_ids != pad_id).long()
 
-        target_text = self._to_string(examples[label_key])
-        target_text += ' </s>'  
-        target = tokenizer(target_text,
-                            padding="max_length",
-                            truncation=True,
-                            max_length=max_length,
-                            return_tensors="pt")
+        return batch
 
-        dict_final = {
-            "source_ids": source["input_ids"].squeeze(0),
-            "source_mask": source["attention_mask"].squeeze(0),
-            "target_ids": target["input_ids"].squeeze(0),
-            "target_mask": target["attention_mask"].squeeze(0),
-        }
-        return dict_final
+    def _collate_batch(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        features = [self._ensure_tokenized_feature(ex) for ex in examples]
+        features = [
+            {
+                key: value
+                for key, value in feat.items()
+                if value is not None
+            }
+            for feat in features
+        ]
+        batch = self._data_collator(features)
+        return self._add_legacy_keys(batch)
 
-    def get_final_ds(self, 
-                     task, 
-                     split,
-                     batch_size,
-                     k=-1,
-                     seed=0,
-                     max_length=512):
-        """Function that returns final T5 dataloader.
-        Args:
-            task (str): Name of the downstream task.
-            split (str): Which data split to use (train/validation/test).
-            batch_size (int): Batch size to use in the dataloader.
-            k (int, optional): Number of samples to use for each class. Defaults to -1, not sub-sample the data.
-            seed (int, optional): Seed used for random shuffle. Defaults to 0.
-            target_len (int, optional): Length of the model output (in tokens). Defaults to 2.
-            max_length (int, optional): Length of the model input (in tokens). Defaults to 512.
+    def _build_loader(self, dataset, split_name: str, batch_size: int):
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=(split_name == "train"),
+            collate_fn=self._collate_batch,
+        )
 
-            
-        Returns:
-            Dataloader: Torch Dataloader with preprocessed input text & label.
-        """
+    def get_final_ds(
+        self,
+        task,
+        split,
+        batch_size,
+        k: int = -1,
+        seed: int = 0,
+        max_length: int = 512,
+        max_target_length: int = 128,
+        return_test: bool = False,
+        **_unused_kwargs,
+    ):
+        if task not in self.task_list:
+            raise ValueError(f"Unknown task name: {task}. Available tasks: {self.task_list}")
 
-        if task == 'CONCODE':
-            dataset = load_dataset('AhmedSSoliman/CodeXGLUE-CONCODE', split=split)
-        elif task == 'CodeTrans':
-            dataset = load_dataset('CM/codexglue_codetrans', split=split)
-        elif task == 'CodeSearchNet':
-            dataset = load_dataset('semeru/code-text-ruby', split=split)
-        elif task == 'BFP':
-            dataset = load_dataset('ayeshgk/code_x_glue_cc_code_refinement_annotated', split=split)
-        elif task == 'TheVault_Csharp':
-            if split == 'train':
-                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="dataset/theVault", languages=["c#"], split_set=["train/small"])
-            else:    
-                dataset = load_dataset("Fsoft-AIC/the-vault-function", cache_dir="dataset/theVault", languages=["c#"], split_set=[split])
-        elif task == 'KodCode':
-            dataset = load_dataset('KodCode/KodCode-V1-SFT-R1', split='train')
-        elif task == 'RunBugRun':
-            dataset = load_dataset('ASSERT-KTH/RunBugRun-Final', split='train')
-            dataset = dataset.filter(lambda example: example["language"] == "ruby")
-        elif task == 'CoST':
-            dataset = load_dataset('dongg18/CoST', split=split)
+        canonical_split = self._canonical_split(split)
+        dataset, resolved_split = self._load_task_split(task, canonical_split)
 
-        dataset = self._unwrap_single_split_dataset(dataset, split)
-
-
-
-        # For train-only tasks, manually split into train / val / test
-        # split_seed is fixed (42) and independent of the shuffle seed
-        # to guarantee consistent, non-overlapping partitions.
-        if task in self.train_only_tasks:
-            dataset = self._split_train_only(dataset, task, split, split_seed=42)
-
-        
-        # Selecting k subset of the samples (if requested)
-        if k!=-1:
-            dataset = self.select_subset_ds(dataset, k=k)
+        if k != -1:
+            dataset = self.select_subset_ds(dataset, k=min(k, len(dataset)), seed=seed)
         else:
             dataset = dataset.shuffle(seed=seed)
-        
-        # Returning the selected data split (train/val/test)
-        task_max_input_length = self.max_input_length.get(task, max_length)
-        encoded_dataset = dataset.map(lambda x: self.preprocess_function(x, 
-                                                                            task,
-                                                                            max_length=max_length,
-                                                                            max_input_length=task_max_input_length,
-                                                                            split_name=split,
-                                                                            split_seed=seed,
-                                                                            ),
-                                                                            batched=False,
-                                                                            )
-        encoded_dataset.set_format(type='torch', columns=['source_ids', 'source_mask',
-                                                              'target_ids', 'target_mask'])
-        dataloader = DataLoader(encoded_dataset, batch_size=batch_size)
-        return dataloader
+
+        self._active_task = task
+        self._active_input_max_len = self.max_input_length.get(task, max_length)
+        self._active_target_max_len = self.max_target_length.get(task, max_target_length)
+
+        if return_test:
+            tmp = dataset.train_test_split(test_size=0.5, seed=seed)
+            val_loader = self._build_loader(
+                tmp["train"],
+                split_name="validation",
+                batch_size=batch_size,
+            )
+            test_loader = self._build_loader(
+                tmp["test"],
+                split_name="test",
+                batch_size=batch_size,
+            )
+            return val_loader, test_loader
+
+        return self._build_loader(
+            dataset,
+            split_name=resolved_split,
+            batch_size=batch_size,
+        )
+
+
+class T5Dataset(Seq2SeqDataset):
+    """Backward-compatible wrapper used by existing training scripts."""
+
+    def __init__(
+        self,
+        tokenizer,
+        task: Optional[str] = None,
+        hf_dataset_id: str = "dongg18/CODETASK_with_instruction_pool",
+    ):
+        super().__init__(tokenizer=tokenizer, hf_dataset_id=hf_dataset_id)
+        self.task = task
+
+    def get_final_ds(self, task: Optional[str] = None, *args, **kwargs):
+        task_name = task if task is not None else self.task
+        if task_name is None:
+            raise ValueError("Task must be provided either in constructor or get_final_ds(...).")
+        return super().get_final_ds(task=task_name, *args, **kwargs)
