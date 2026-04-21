@@ -32,6 +32,7 @@ accelerate launch --config_file accelerate_config.yaml train_t5_cl.py \
     --max_eval 1000 \
     --max_test 5000 \
     --prefix_len 50 \
-    --start_task 0 
+    --start_task 4 \
+    --prefix_path /data/scratch/projects/punim1928/HUST/east/CodeGR/Dense/ProgressivePrompts/T5_codebase/log/codet5p-770m_20260421_061517/prompts_after_task3_BFP.npy
 
 
