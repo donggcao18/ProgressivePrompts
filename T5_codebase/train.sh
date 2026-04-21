@@ -12,7 +12,7 @@ accelerate launch --config_file accelerate_config.yaml train_t5_cl.py \
     --task_list CONCODE CodeTrans CodeSearchNet BFP KodCode RunBugRun TheVault_Csharp CoST \
     --model_name Salesforce/codet5p-770m \
     --num_epochs 3 \
-    --batch_size 16 \
+    --batch_size 8 \
     --seq_len 512 \
     --lr 0.3 \
     --progressive 1 \
